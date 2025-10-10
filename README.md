@@ -67,6 +67,14 @@ OPENAI_API_KEY=your_openai_key_here # optional if using AI questions
 dotnet run --project StrongLink.Worker
 ```
 
+### Standalone Demo (no Telegram required)
+
+```bash
+dotnet run --project StrongLink.Worker -- --standalone
+```
+
+Runs a short 3-tour demo against simulated players (default 45% accuracy).
+
 ## Getting Bot Credentials
 
 ### Telegram Bot Token

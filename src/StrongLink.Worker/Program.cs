@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker;
 using StrongLink.Worker.Configuration;
@@ -5,10 +7,17 @@ using StrongLink.Worker.Localization;
 using StrongLink.Worker.Persistence;
 using StrongLink.Worker.QuestionProviders;
 using StrongLink.Worker.Services;
+using StrongLink.Worker.Standalone;
 using StrongLink.Worker.Telegram;
 using StrongLink.Worker.Telegram.Updates;
 using StrongLink.Worker.Telegram.Updates.Handlers;
 using Telegram.Bot;
+
+if (args.Contains("--standalone", StringComparer.OrdinalIgnoreCase))
+{
+    await RunStandaloneAsync();
+    return;
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -69,3 +78,36 @@ builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();
 host.Run();
+
+async Task RunStandaloneAsync()
+{
+    var services = new ServiceCollection();
+    services.AddLogging(logging => logging.AddSimpleConsole(options => options.SingleLine = true));
+
+    services.AddSingleton<IChatMessenger, ConsoleMessenger>();
+    services.AddSingleton<ILocalizationService, LocalizationService>();
+    services.AddSingleton<IGameSessionRepository, InMemoryGameSessionRepository>();
+    services.AddSingleton<IGameLifecycleService, GameLifecycleService>();
+
+    services.AddSingleton(new GameOptions
+    {
+        Tours = 3,
+        RoundsPerTour = 4,
+        AnswerTimeoutSeconds = 20,
+        EliminateLowest = 1,
+        Topics = new[] { "History", "Science", "Culture" }
+    });
+
+    services.AddSingleton(new DummyPlayerOptions
+    {
+        CorrectAnswerProbability = 0.45
+    });
+
+    services.AddSingleton<StandaloneGameRunner>();
+
+    using var provider = services.BuildServiceProvider();
+    var runner = provider.GetRequiredService<StandaloneGameRunner>();
+    Console.WriteLine("Starting Strong Link standalone demo...\n");
+    await runner.RunAsync(CancellationToken.None);
+    Console.WriteLine("\nStandalone session finished.");
+}
