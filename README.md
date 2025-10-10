@@ -115,16 +115,24 @@ dotnet run --project StrongLink.Worker
 ## Architecture
 
 ```
-StrongLink.Worker/
-├── Program.cs                 # Service wiring and DI setup
-├── Worker.cs                  # Hosted service entry point
-├── Configuration/             # Options POCOs for appsettings binding
-├── Domain/                    # Core game entities and enums
-├── Localization/              # Language packs and localization service
-├── QuestionProviders/         # AI and ChGK question source implementations
-├── Persistence/               # JSON-backed game session repository
-├── Services/                  # Game lifecycle orchestration
-└── Telegram/                  # Bot lifetime, dispatcher, and update handlers
+src/
+└── StrongLink.Worker/
+    ├── Program.cs                 # Service wiring and DI setup
+    ├── Worker.cs                  # Hosted service entry point
+    ├── Configuration/             # Options POCOs bound from appsettings
+    ├── Domain/                    # Core entities (players, sessions, questions)
+    ├── Localization/              # Multi-language resources and helpers
+    ├── QuestionProviders/         # AI and ChGK question source strategies
+    ├── Persistence/               # JSON-backed game state repository
+    ├── Services/                  # Game lifecycle + messaging abstractions
+    ├── Telegram/                  # Bot lifetime, dispatcher, command handlers
+    └── appsettings*.json          # Runtime configuration defaults
+
+tests/
+└── StrongLink.Worker.Tests/
+    ├── GameLifecycleServiceTests.cs        # Messaging and scoring flow tests
+    ├── QuestionProviders/                  # AI provider parsing tests
+    └── StrongLink.Worker.Tests.csproj      # xUnit test project
 ```
 
 ## Troubleshooting
