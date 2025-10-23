@@ -28,6 +28,7 @@ public enum GameLanguage
 public enum QuestionSourceMode
 {
     AI,
-    Chgk
+    Chgk,
+    Json
 }
 

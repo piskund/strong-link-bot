@@ -41,6 +41,8 @@ public sealed class GameSession
     public Question? CurrentQuestion { get; set; }
 
     public long? CurrentPlayerId { get; set; }
+    
+    public Dictionary<string, object> Metadata { get; } = new();
 
     public bool IsPlayerActive(long playerId) => Players.Any(p => p.Id == playerId && p.Status == PlayerStatus.Active);
 

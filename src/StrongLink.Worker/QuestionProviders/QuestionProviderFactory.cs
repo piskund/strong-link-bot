@@ -19,5 +19,7 @@ public sealed class QuestionProviderFactory
         Guard.IsNotNull(provider, nameof(provider));
         return provider;
     }
+
+    public QuestionSourceMode DefaultMode { get; init; } = QuestionSourceMode.AI;
 }
 

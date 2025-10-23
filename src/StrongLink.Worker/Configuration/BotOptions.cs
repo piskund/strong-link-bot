@@ -4,7 +4,7 @@ namespace StrongLink.Worker.Configuration;
 
 public sealed class BotOptions
 {
-    public required string Token { get; init; }
+    public string Token { get; init; } = "";
 
     public string[] AdminUsernames { get; init; } = Array.Empty<string>();
 
@@ -12,9 +12,9 @@ public sealed class BotOptions
 
     public QuestionSourceMode QuestionSource { get; init; } = QuestionSourceMode.AI;
 
-    public required string StateStoragePath { get; init; }
+    public string StateStoragePath { get; init; } = "data/state";
 
-    public required string ResultsStoragePath { get; init; }
+    public string ResultsStoragePath { get; init; } = "data/results";
 
     public PollingOptions Polling { get; init; } = new();
 }
