@@ -57,7 +57,12 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
 
         try
         {
-            var requiredPerTour = Math.Max(1, session.Players.Count) * session.RoundsPerTour;
+            // Use at least 3 players when calculating required questions
+            // This ensures enough questions even if players join later
+            var effectivePlayerCount = Math.Max(3, session.Players.Count);
+            var requiredPerTour = effectivePlayerCount * session.RoundsPerTour;
+            _logger.LogInformation("Calculating required questions: {EffectiveCount} players * {Rounds} rounds = {Required} per tour",
+                effectivePlayerCount, session.RoundsPerTour, requiredPerTour);
             var totalRequired = session.Tours * requiredPerTour;
 
             // First, try to get questions from the unused pool

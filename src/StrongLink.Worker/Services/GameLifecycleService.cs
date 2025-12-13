@@ -512,27 +512,70 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
                 if (tiedForLowest.Count > 1)
                 {
-                    // Multiple players tied for lowest - need sudden death to determine final rankings
-                    _logger.LogInformation("Entering sudden death for {Count} players tied for lowest score",
-                        tiedForLowest.Count);
+                    // Check if we have questions available for sudden death
+                    var hasQuestionsAvailable = false;
 
-                    session.Status = GameStatus.SuddenDeath;
-
-                    // Track which players are in sudden death
-                    session.Metadata["SuddenDeathParticipants"] = tiedForLowest.Select(p => p.Id).ToList();
-
-                    var text = _localization.GetString(session.Language, "Game.SuddenDeath");
-                    await _messenger.SendAsync(session.ChatId, text, cancellationToken);
-
-                    // Queue only sudden death participants
-                    foreach (var player in tiedForLowest)
+                    // Check current tour
+                    if (session.QuestionsByTour.TryGetValue(session.CurrentTour, out var currentTourQuestions) &&
+                        currentTourQuestions.Count > 0)
                     {
-                        session.TurnQueue.Enqueue(player.Id);
+                        hasQuestionsAvailable = true;
+                    }
+                    // Check next tour if current is empty
+                    else if (session.QuestionsByTour.TryGetValue(session.CurrentTour + 1, out var nextTourQuestions) &&
+                             nextTourQuestions.Count > 0)
+                    {
+                        hasQuestionsAvailable = true;
+                        _logger.LogInformation("No questions in current tour {Tour}, will use questions from tour {NextTour} for sudden death",
+                            session.CurrentTour, session.CurrentTour + 1);
+                        // Move to next tour for sudden death
+                        session.CurrentTour += 1;
                     }
 
-                    await _repository.SaveAsync(session, cancellationToken);
-                    await AdvanceRoundAsync(session, cancellationToken);
-                    return;
+                    if (!hasQuestionsAvailable)
+                    {
+                        _logger.LogWarning("No questions available for sudden death. Eliminating all tied players.");
+                        var warningText = session.Language == GameLanguage.Russian
+                            ? "⚠️ Недостаточно вопросов для внезапной смерти. Все игроки с одинаковым счётом выбывают."
+                            : "⚠️ Not enough questions for sudden death. All tied players are eliminated.";
+                        await _messenger.SendAsync(session.ChatId, warningText, cancellationToken);
+
+                        // Eliminate all tied players
+                        foreach (var player in tiedForLowest)
+                        {
+                            player.Status = PlayerStatus.Eliminated;
+                            _logger.LogInformation("Player {PlayerName} eliminated (tied, no sudden death possible). Score: {Score}",
+                                player.DisplayName, player.Score);
+                            var text = string.Format(
+                                _localization.GetString(session.Language, "Game.Eliminated"),
+                                player.DisplayName);
+                            await _messenger.SendAsync(session.ChatId, text, cancellationToken);
+                        }
+                    }
+                    else
+                    {
+                        // Multiple players tied for lowest - need sudden death to determine final rankings
+                        _logger.LogInformation("Entering sudden death for {Count} players tied for lowest score",
+                            tiedForLowest.Count);
+
+                        session.Status = GameStatus.SuddenDeath;
+
+                        // Track which players are in sudden death
+                        session.Metadata["SuddenDeathParticipants"] = tiedForLowest.Select(p => p.Id).ToList();
+
+                        var text = _localization.GetString(session.Language, "Game.SuddenDeath");
+                        await _messenger.SendAsync(session.ChatId, text, cancellationToken);
+
+                        // Queue only sudden death participants
+                        foreach (var player in tiedForLowest)
+                        {
+                            session.TurnQueue.Enqueue(player.Id);
+                        }
+
+                        await _repository.SaveAsync(session, cancellationToken);
+                        await AdvanceRoundAsync(session, cancellationToken);
+                        return;
+                    }
                 }
                 else
                 {
@@ -556,6 +599,39 @@ public sealed class GameLifecycleService : IGameLifecycleService
             var tiedGroups = activePlayers.GroupBy(p => p.Score).Where(g => g.Count() > 1).ToList();
             if (tiedGroups.Any())
             {
+                // Check if we have questions available for sudden death
+                var hasQuestionsAvailable = false;
+
+                // Check current tour
+                if (session.QuestionsByTour.TryGetValue(session.CurrentTour, out var currentTourQuestions) &&
+                    currentTourQuestions.Count > 0)
+                {
+                    hasQuestionsAvailable = true;
+                }
+                // Check next tour if current is empty
+                else if (session.QuestionsByTour.TryGetValue(session.CurrentTour + 1, out var nextTourQuestions) &&
+                         nextTourQuestions.Count > 0)
+                {
+                    hasQuestionsAvailable = true;
+                    _logger.LogInformation("No questions in current tour {Tour}, will use questions from tour {NextTour} for sudden death",
+                        session.CurrentTour, session.CurrentTour + 1);
+                    // Move to next tour for sudden death
+                    session.CurrentTour += 1;
+                }
+
+                if (!hasQuestionsAvailable)
+                {
+                    _logger.LogWarning("No questions available for sudden death. Ending game with current standings.");
+                    var warningText = session.Language == GameLanguage.Russian
+                        ? "⚠️ Недостаточно вопросов для внезапной смерти. Игра завершена с текущими результатами."
+                        : "⚠️ Not enough questions for sudden death. Game ended with current standings.";
+                    await _messenger.SendAsync(session.ChatId, warningText, cancellationToken);
+
+                    // End game without sudden death
+                    await CompleteGameAsync(session, cancellationToken);
+                    return;
+                }
+
                 // Have ties among final 3 or fewer - need sudden death
                 var tiedPlayers = tiedGroups.SelectMany(g => g).ToList();
                 _logger.LogInformation("Final {Count} players have ties. Entering sudden death for {TiedCount} tied players.",

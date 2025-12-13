@@ -197,11 +197,18 @@ public class PreparePoolCommandHandlerTests
         _poolRepository.Setup(p => p.GetArchivedQuestionsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<Question>());
 
+        // With 1 player, effective count is 3 (minimum), so 3 * 3 rounds = 9 questions needed
         var poolQuestions = new List<Question>
         {
             new Question { Topic = "General", Text = "Q1?", Answer = "A1" },
             new Question { Topic = "General", Text = "Q2?", Answer = "A2" },
-            new Question { Topic = "General", Text = "Q3?", Answer = "A3" }
+            new Question { Topic = "General", Text = "Q3?", Answer = "A3" },
+            new Question { Topic = "General", Text = "Q4?", Answer = "A4" },
+            new Question { Topic = "General", Text = "Q5?", Answer = "A5" },
+            new Question { Topic = "General", Text = "Q6?", Answer = "A6" },
+            new Question { Topic = "General", Text = "Q7?", Answer = "A7" },
+            new Question { Topic = "General", Text = "Q8?", Answer = "A8" },
+            new Question { Topic = "General", Text = "Q9?", Answer = "A9" }
         };
 
         _poolRepository.Setup(p => p.SelectQuestionsAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
@@ -244,7 +251,7 @@ public class PreparePoolCommandHandlerTests
             .ReturnsAsync(session);
 
         _poolRepository.Setup(p => p.GetPoolStatsAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync((1, 0)); // Only 1 question in pool, need 3
+            .ReturnsAsync((1, 0)); // Only 1 question in pool, need 9 (3 players * 3 rounds)
 
         _poolRepository.Setup(p => p.GetArchivedQuestionsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<Question>());
@@ -257,13 +264,20 @@ public class PreparePoolCommandHandlerTests
         _poolRepository.Setup(p => p.SelectQuestionsAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(poolQuestions);
 
+        // AI generates enough questions + 1 surplus
         var generatedQuestions = new Dictionary<int, List<Question>>
         {
             { 1, new List<Question>
                 {
                     new Question { Topic = "General", Text = "Q2?", Answer = "A2" },
                     new Question { Topic = "General", Text = "Q3?", Answer = "A3" },
-                    new Question { Topic = "General", Text = "Q4?", Answer = "A4" } // Extra question - will become surplus
+                    new Question { Topic = "General", Text = "Q4?", Answer = "A4" },
+                    new Question { Topic = "General", Text = "Q5?", Answer = "A5" },
+                    new Question { Topic = "General", Text = "Q6?", Answer = "A6" },
+                    new Question { Topic = "General", Text = "Q7?", Answer = "A7" },
+                    new Question { Topic = "General", Text = "Q8?", Answer = "A8" },
+                    new Question { Topic = "General", Text = "Q9?", Answer = "A9" },
+                    new Question { Topic = "General", Text = "Q10?", Answer = "A10" } // Extra question - will become surplus
                 }
             }
         };
