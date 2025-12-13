@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker;
 using StrongLink.Worker.Configuration;
+using StrongLink.Worker.Domain;
 using StrongLink.Worker.Localization;
 using StrongLink.Worker.Persistence;
 using StrongLink.Worker.QuestionProviders;
@@ -13,6 +14,56 @@ using StrongLink.Worker.Telegram;
 using StrongLink.Worker.Telegram.Updates;
 using StrongLink.Worker.Telegram.Updates.Handlers;
 using Telegram.Bot;
+
+// Load environment variables from .env file
+// Search for .env file starting from current directory and moving up
+var currentDir = Directory.GetCurrentDirectory();
+string? envPath = null;
+while (currentDir != null)
+{
+    var testPath = Path.Combine(currentDir, ".env");
+    if (File.Exists(testPath))
+    {
+        envPath = testPath;
+        break;
+    }
+    var parent = Directory.GetParent(currentDir);
+    currentDir = parent?.FullName;
+}
+
+if (envPath != null)
+{
+    DotNetEnv.Env.Load(envPath);
+}
+else
+{
+    // Try default location
+    DotNetEnv.Env.Load();
+}
+
+if (args.Contains("--test-prepare", StringComparer.OrdinalIgnoreCase))
+{
+    await TestPrepareFlow.RunAsync();
+    return;
+}
+
+if (args.Contains("--test-serialization", StringComparer.OrdinalIgnoreCase))
+{
+    TestSerialization.Run();
+    return;
+}
+
+if (args.Contains("--test-questions", StringComparer.OrdinalIgnoreCase))
+{
+    await TestQuestionGeneration.RunAsync();
+    return;
+}
+
+if (args.Contains("--test-answers", StringComparer.OrdinalIgnoreCase))
+{
+    await TestAnswerValidation.RunAsync();
+    return;
+}
 
 if (args.Contains("--standalone", StringComparer.OrdinalIgnoreCase))
 {
@@ -38,12 +89,16 @@ builder.Services.AddSingleton<IChatMessenger, ChatMessenger>();
 builder.Services.AddSingleton<QuestionProviderFactory>();
 builder.Services.AddSingleton<JsonGameSessionRepository>();
 builder.Services.AddSingleton<IGameSessionRepository>(sp => sp.GetRequiredService<JsonGameSessionRepository>());
+builder.Services.AddSingleton<IQuestionPoolRepository, QuestionPoolRepository>();
+builder.Services.AddSingleton<IGameResultRepository, JsonGameResultRepository>();
 builder.Services.AddSingleton<IGameLifecycleService, GameLifecycleService>();
 builder.Services.AddSingleton<IBotLifetimeService, TelegramBotService>();
 builder.Services.AddSingleton<UpdateDispatcher>();
 
 builder.Services.AddHttpClient<AiQuestionProvider>();
 builder.Services.AddHttpClient<ChgkQuestionProvider>();
+builder.Services.AddHttpClient<AiAnswerValidator>();
+builder.Services.AddSingleton<IAnswerValidator, AiAnswerValidator>();
 
 builder.Services.AddSingleton<IQuestionProvider>(sp => sp.GetRequiredService<AiQuestionProvider>());
 builder.Services.AddSingleton<IQuestionProvider>(sp => sp.GetRequiredService<ChgkQuestionProvider>());
@@ -56,6 +111,8 @@ builder.Services.AddTransient<HelpCommandHandler>();
 builder.Services.AddTransient<StandingsCommandHandler>();
 builder.Services.AddTransient<StartGameCommandHandler>();
 builder.Services.AddTransient<StopCommandHandler>();
+builder.Services.AddTransient<PoolStatusCommandHandler>();
+builder.Services.AddTransient<PoolClearCommandHandler>();
 builder.Services.AddTransient<AnswerMessageHandler>();
 
 builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHandler[]
@@ -68,6 +125,8 @@ builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHand
     sp.GetRequiredService<StandingsCommandHandler>(),
     sp.GetRequiredService<StartGameCommandHandler>(),
     sp.GetRequiredService<StopCommandHandler>(),
+    sp.GetRequiredService<PoolStatusCommandHandler>(),
+    sp.GetRequiredService<PoolClearCommandHandler>(),
     sp.GetRequiredService<AnswerMessageHandler>()
 });
 
@@ -116,10 +175,15 @@ async Task RunStandaloneAsync(string[] args)
     services.AddSingleton<IChatMessenger, ConsoleMessenger>();
     services.AddSingleton<ILocalizationService, LocalizationService>();
     services.AddSingleton<IGameSessionRepository, InMemoryGameSessionRepository>();
+    services.AddSingleton<IOptions<BotOptions>>(Options.Create(botOptions));
+    services.AddSingleton<IQuestionPoolRepository, QuestionPoolRepository>();
+    services.AddSingleton<IGameResultRepository, JsonGameResultRepository>();
     services.AddSingleton<IGameLifecycleService, GameLifecycleService>();
 
     services.AddHttpClient<AiQuestionProvider>();
     services.AddHttpClient<ChgkQuestionProvider>();
+    services.AddHttpClient<AiAnswerValidator>();
+    services.AddSingleton<IAnswerValidator, AiAnswerValidator>();
     services.AddSingleton<IQuestionProvider, AiQuestionProvider>();
     services.AddSingleton<IQuestionProvider, ChgkQuestionProvider>();
     services.AddSingleton<IQuestionProvider, JsonQuestionProvider>();
@@ -184,19 +248,19 @@ static StrongLink.Worker.Standalone.StandaloneRunOptions ParseStandaloneArgs(str
     static bool HasFlag(string[] a, string key) => a.Any(s => string.Equals(s, key, StringComparison.OrdinalIgnoreCase));
 
     var src = GetValue(args, "--source");
-    Domain.QuestionSourceMode? source = src?.ToLowerInvariant() switch
+    QuestionSourceMode? source = src?.ToLowerInvariant() switch
     {
-        "ai" => Domain.QuestionSourceMode.AI,
-        "chgk" => Domain.QuestionSourceMode.Chgk,
-        "json" => Domain.QuestionSourceMode.Json,
+        "ai" => QuestionSourceMode.AI,
+        "chgk" => QuestionSourceMode.Chgk,
+        "json" => QuestionSourceMode.Json,
         _ => null
     };
 
     var lang = GetValue(args, "--language");
-    Domain.GameLanguage? language = lang?.ToLowerInvariant() switch
+    GameLanguage? language = lang?.ToLowerInvariant() switch
     {
-        "ru" => Domain.GameLanguage.Russian,
-        "en" => Domain.GameLanguage.English,
+        "ru" => GameLanguage.Russian,
+        "en" => GameLanguage.English,
         _ => null
     };
 

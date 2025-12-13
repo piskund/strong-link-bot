@@ -1,0 +1,48 @@
+# Strong Link Bot Environment Configuration Template
+# Copyright (c) 2025 Dmytro Piskun <dmytro.piskun@gmail.com>
+#
+# Instructions:
+# 1. Copy this file to .env: copy env_template.txt .env
+# 2. Fill in your actual values below
+# 3. Never commit .env to git (it's in .gitignore)
+#
+# Note: Environment variables override appsettings.json values
+# Format: SECTION__PROPERTY (double underscore) for nested config
+
+# Telegram Bot Configuration
+# Get your token from @BotFather (https://t.me/botfather)
+# Example: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+BOT__TOKEN=your_telegram_bot_token_here
+
+# OpenAI Configuration
+# Get your API key from https://platform.openai.com/api-keys
+# Required only if using AI-generated questions (BOT__QUESTIONSOURCE: "AI")
+# Example: sk-proj-abc123...
+OPENAI__APIKEY=your_openai_api_key_here
+
+# Model for question generation (use powerful models for better questions)
+# Examples: gpt-5.2, gpt-4o, gpt-4o-mini
+OPENAI__MODEL=gpt-4o-mini
+
+# Model for answer validation (optional - uses OPENAI__MODEL if not set)
+# Recommended: use cheap model here to save costs (gpt-4o-mini)
+# Answer validation is a simple task called many times per game
+OPENAI__ANSWERVALIDATIONMODEL=gpt-4o-mini
+
+# Bot Behavior Configuration (optional - defaults from appsettings.json will be used if not set)
+# Language: "Russian" for Russian, "English" for English (must match enum value)
+BOT__DEFAULTLANGUAGE=Russian
+
+# Question source: "AI" for OpenAI-generated, "Chgk" for ChGK database
+BOT__QUESTIONSOURCE=AI
+
+# Game Configuration (optional)
+GAME__TOURS=8
+GAME__ROUNDSPERTOUR=10
+GAME__ANSWERTIMEOUTSECONDS=30
+GAME__ELIMINATELOWEST=1
+
+# Use AI for answer validation (true/false)
+# When enabled, uses AI to check if answers are semantically correct
+# Handles minor spelling differences, word order variations, abbreviations, etc.
+GAME__USEAIANSWERVALIDATION=true

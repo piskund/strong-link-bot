@@ -77,7 +77,7 @@ namespace StrongLink.Worker.Standalone;
         Console.WriteLine();
     }
 
-        public StandaloneRunOptions? Options { get; init; }
+        public StandaloneRunOptions? Options { get; set; }
 
         private async Task<GameSession?> PrepareSessionAsync(CancellationToken cancellationToken)
     {
@@ -184,7 +184,8 @@ namespace StrongLink.Worker.Standalone;
         if (Options?.DryRun is true)
         {
             Console.WriteLine("Dry run: pool prepared and validated. No gameplay.");
-            return session with { Status = GameStatus.Completed };
+            session.Status = GameStatus.Completed;
+            return session;
         }
         await _lifecycle.StartGameAsync(session, cancellationToken);
         return session;
@@ -196,7 +197,7 @@ namespace StrongLink.Worker.Standalone;
         var botAccuracy = Options?.DummyAccuracyOverride ?? _dummyOptions.CorrectAnswerProbability;
         var questionsAnswered = new List<(Question question, string playerName, string playerAnswer, bool isCorrect)>();
 
-        while (session.Status == GameStatus.InProgress)
+        while (session.Status == GameStatus.InProgress || session.Status == GameStatus.SuddenDeath)
         {
             if (session.CurrentQuestion is null || session.CurrentPlayerId is null)
             {

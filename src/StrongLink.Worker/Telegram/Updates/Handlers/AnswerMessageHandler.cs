@@ -37,7 +37,7 @@ public sealed class AnswerMessageHandler : IUpdateHandler
         }
 
         var session = await _repository.LoadAsync(message.Chat.Id, cancellationToken);
-        if (session is null || session.Status != Domain.GameStatus.InProgress)
+        if (session is null || (session.Status != Domain.GameStatus.InProgress && session.Status != Domain.GameStatus.SuddenDeath))
         {
             return;
         }

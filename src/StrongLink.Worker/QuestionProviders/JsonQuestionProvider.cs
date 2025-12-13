@@ -17,7 +17,7 @@ public sealed class JsonQuestionProvider : IQuestionProvider
 
 	public QuestionSourceMode Mode => QuestionSourceMode.Json;
 
-	public async Task<IReadOnlyDictionary<int, List<Question>>> PrepareQuestionPoolAsync(
+	public Task<IReadOnlyDictionary<int, List<Question>>> PrepareQuestionPoolAsync(
 		IReadOnlyList<string> topics,
 		int tours,
 		int roundsPerTour,
@@ -25,7 +25,8 @@ public sealed class JsonQuestionProvider : IQuestionProvider
 		GameLanguage language,
 		CancellationToken cancellationToken)
 	{
-		throw new InvalidOperationException("Use PrepareFromFileAsync on JsonQuestionProvider via Standalone runner.");
+		return Task.FromException<IReadOnlyDictionary<int, List<Question>>>(
+			new InvalidOperationException("Use PrepareFromFileAsync on JsonQuestionProvider via Standalone runner."));
 	}
 
 	public async Task<IReadOnlyDictionary<int, List<Question>>> PrepareFromFileAsync(

@@ -23,6 +23,7 @@ public sealed class JsonGameSessionRepository : IGameSessionRepository
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             Converters =
             {
                 new System.Text.Json.Serialization.JsonStringEnumConverter()

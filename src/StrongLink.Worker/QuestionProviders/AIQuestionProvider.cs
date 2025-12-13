@@ -14,13 +14,13 @@ public sealed class AiQuestionProvider : IQuestionProvider
 {
     private readonly HttpClient _httpClient;
     private readonly OpenAiOptions _options;
-    private readonly LocalizationService _localizationService;
+    private readonly ILocalizationService _localizationService;
     private readonly ILogger<AiQuestionProvider> _logger;
 
     public AiQuestionProvider(
         HttpClient httpClient,
         IOptions<OpenAiOptions> options,
-        LocalizationService localizationService,
+        ILocalizationService localizationService,
         ILogger<AiQuestionProvider> logger)
     {
         _httpClient = httpClient;
@@ -39,85 +39,198 @@ public sealed class AiQuestionProvider : IQuestionProvider
         GameLanguage language,
         CancellationToken cancellationToken)
     {
+        return await PrepareQuestionPoolAsync(topics, tours, roundsPerTour, players, language, null, cancellationToken);
+    }
+
+    public async Task<IReadOnlyDictionary<int, List<Question>>> PrepareQuestionPoolAsync(
+        IReadOnlyList<string> topics,
+        int tours,
+        int roundsPerTour,
+        IReadOnlyList<Player> players,
+        GameLanguage language,
+        IReadOnlyList<Question>? archivedQuestions,
+        CancellationToken cancellationToken)
+    {
         var result = new Dictionary<int, List<Question>>();
 
         for (var tourIndex = 0; tourIndex < tours; tourIndex++)
         {
-            var topic = topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
-            var questionsNeeded = Math.Max(1, players.Count) * roundsPerTour;
-            _logger.LogInformation("Requesting {Count} AI questions for topic {Topic}", questionsNeeded, topic);
+            try
+            {
+                var topic = topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
+                var questionsNeeded = Math.Max(1, players.Count) * roundsPerTour;
+                _logger.LogInformation("Requesting {Count} AI questions for topic {Topic}", questionsNeeded, topic);
 
-            var prompt = BuildPrompt(language, topic, questionsNeeded);
-            var response = await RequestOpenAiAsync(prompt, cancellationToken);
-            var parsed = ParseQuestions(response, topic);
+                var prompt = BuildPrompt(language, topic, questionsNeeded, archivedQuestions);
+                _logger.LogDebug("Prompt: {Prompt}", prompt);
 
-            result[tourIndex + 1] = parsed.Take(questionsNeeded).ToList();
+                var response = await RequestOpenAiAsync(prompt, cancellationToken);
+                _logger.LogDebug("Received response from OpenAI");
+
+                var parsed = ParseQuestions(response, topic);
+                var questionList = parsed.ToList();  // Keep ALL parsed questions, not just the needed amount
+                _logger.LogInformation("Parsed {Count} questions from OpenAI response (requested {Needed})",
+                    questionList.Count, questionsNeeded);
+
+                result[tourIndex + 1] = questionList;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to generate questions for tour {Tour}", tourIndex + 1);
+                result[tourIndex + 1] = new List<Question>();
+            }
         }
 
         return result;
     }
 
-    private string BuildPrompt(GameLanguage language, string topic, int questions)
+    private string BuildPrompt(GameLanguage language, string topic, int questions, IReadOnlyList<Question>? archivedQuestions = null)
     {
         var pack = _localizationService.GetLanguagePack(language);
+
+        // Build context from archived questions to avoid repetition
+        var archivedContext = "";
+        if (archivedQuestions != null && archivedQuestions.Count > 0)
+        {
+            // Take up to 30 most recent archived questions for context
+            var recentArchived = archivedQuestions
+                .TakeLast(30)
+                .Select(q => $"- {q.Text}")
+                .ToList();
+
+            if (language == GameLanguage.Russian)
+            {
+                archivedContext = "\n\nВАЖНО: Не повторяйте эти вопросы, которые уже были заданы ранее:\n" +
+                    string.Join("\n", recentArchived) + "\n\n" +
+                    "Создайте НОВЫЕ вопросы, которые отличаются от приведённых выше.\n";
+            }
+            else
+            {
+                archivedContext = "\n\nIMPORTANT: Do NOT repeat these questions that have been asked before:\n" +
+                    string.Join("\n", recentArchived) + "\n\n" +
+                    "Create NEW questions that are different from the ones listed above.\n";
+            }
+        }
+
         var instruction = language == GameLanguage.Russian
             ?
-            "Сгенерируй {0} викторинных вопросов на русском языке по теме \"{1}\". Формат каждого блока:\nВопрос: <текст вопроса>?\nОтвет: <короткий точный ответ>."
+            "Составьте набор викторинных вопросов на русском языке по теме \"{1}\". Учитывайте следующие требования:\n" +
+            "- Сгенерируйте {0} вопросов по теме \"{1}\".\n" +
+            "- Каждый вопрос должен быть понятным и коротким, рассчитан на широкую аудиторию (не только знатоков).\n" +
+            "- К каждому вопросу дайте правильный краткий ответ (одно слово или несколько слов).\n" +
+            "- Вопросы должны быть интересными и заставлять думать, но не слишком сложными.\n" +
+            "- Избегайте двусмысленных вопросов - у каждого вопроса должен быть один чёткий правильный ответ.\n" +
+            "- Вопросы должны покрывать разные аспекты темы.\n" +
+            archivedContext +
+            "- Оформите вывод в точном формате:\n" +
+            "Вопрос: <текст вопроса>?\n" +
+            "Ответ: <текст ответа>\n" +
+            "(Не добавляйте никаких пояснений или комментариев.)"
             :
-            "Generate {0} trivia questions in English on the topic \"{1}\". Format each block as:\nQuestion: <question text>?\nAnswer: <short precise answer>.";
+            "Create a set of trivia questions in English on the topic \"{1}\". Follow these requirements:\n" +
+            "- Generate {0} questions about the topic \"{1}\".\n" +
+            "- Each question should be clear and concise, suitable for a general audience (non-experts).\n" +
+            "- Provide a correct short answer for each question (one word or a few words at most).\n" +
+            "- Questions should be interesting and thought-provoking, but not too difficult.\n" +
+            "- Avoid ambiguous questions - each should have a single clear correct answer.\n" +
+            "- Ensure the questions are varied and cover different aspects of the topic.\n" +
+            archivedContext +
+            "- Format the output exactly as:\n" +
+            "Question: <question text>?\n" +
+            "Answer: <answer text>\n" +
+            "(No additional explanations or commentary.)";
 
         return string.Format(instruction, questions, topic);
     }
 
     private async Task<OpenAiResponse> RequestOpenAiAsync(string prompt, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, _options.Endpoint);
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
-
-        var body = new OpenAiRequest
+        try
         {
-            Model = _options.Model,
-            Messages =
-            [
-                new OpenAiMessage("system", "You are a helpful trivia generation assistant."),
-                new OpenAiMessage("user", prompt)
-            ]
-        };
+            using var request = new HttpRequestMessage(HttpMethod.Post, _options.Endpoint);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
 
-        var json = JsonSerializer.Serialize(body, new JsonSerializerOptions
+            var body = new OpenAiRequest
+            {
+                Model = _options.Model,
+                Messages =
+                [
+                    new OpenAiMessage("system", "You are a trivia question generator. Create clear, engaging trivia questions suitable for a quiz game. Each question should have a single unambiguous correct answer."),
+                    new OpenAiMessage("user", prompt)
+                ]
+            };
+
+            var json = JsonSerializer.Serialize(body, new JsonSerializerOptions
+            {
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            });
+
+            request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+            _logger.LogDebug("Sending request to OpenAI: {Endpoint}", _options.Endpoint);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogError("OpenAI API returned {StatusCode}: {Error}", response.StatusCode, errorContent);
+                response.EnsureSuccessStatusCode();
+            }
+
+            var payload = await JsonSerializer.DeserializeAsync<OpenAiResponse>(
+                await response.Content.ReadAsStreamAsync(cancellationToken),
+                cancellationToken: cancellationToken);
+            return payload ?? throw new InvalidOperationException("OpenAI response payload was null");
+        }
+        catch (HttpRequestException ex)
         {
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-        });
-
-        request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        var payload = await JsonSerializer.DeserializeAsync<OpenAiResponse>(
-            await response.Content.ReadAsStreamAsync(cancellationToken),
-            cancellationToken: cancellationToken);
-        return payload ?? throw new InvalidOperationException("OpenAI response payload was null");
+            _logger.LogError(ex, "HTTP request to OpenAI failed");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to request questions from OpenAI");
+            throw;
+        }
     }
 
-    private static IEnumerable<Question> ParseQuestions(OpenAiResponse response, string topic)
+    private IEnumerable<Question> ParseQuestions(OpenAiResponse response, string topic)
     {
         var content = response.Choices.Select(c => c.Message.Content).FirstOrDefault() ?? string.Empty;
+
+        _logger.LogInformation("OpenAI response content:\n{Content}", content);
+
         var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        _logger.LogInformation("Split into {Count} lines", lines.Length);
+
         string? questionText = null;
+        var parsedCount = 0;
 
         foreach (var line in lines)
         {
-            if (line.StartsWith("Question:", StringComparison.OrdinalIgnoreCase) ||
-                line.StartsWith("Вопрос:", StringComparison.OrdinalIgnoreCase))
+            var trimmedLine = line.Trim();
+            _logger.LogDebug("Processing line: {Line}", trimmedLine);
+
+            if (trimmedLine.StartsWith("Question:", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Вопрос:", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Q:", StringComparison.OrdinalIgnoreCase))
             {
-                questionText = line[(line.IndexOf(':') + 1)..].Trim().TrimEnd('?');
+                var colonIndex = trimmedLine.IndexOf(':');
+                questionText = trimmedLine[(colonIndex + 1)..].Trim().TrimEnd('?');
+                _logger.LogDebug("Found question: {Question}", questionText);
             }
-            else if (line.StartsWith("Answer:", StringComparison.OrdinalIgnoreCase) ||
-                     line.StartsWith("Ответ:", StringComparison.OrdinalIgnoreCase))
+            else if (trimmedLine.StartsWith("Answer:", StringComparison.OrdinalIgnoreCase) ||
+                     trimmedLine.StartsWith("Ответ:", StringComparison.OrdinalIgnoreCase) ||
+                     trimmedLine.StartsWith("A:", StringComparison.OrdinalIgnoreCase))
             {
-                var answer = line[(line.IndexOf(':') + 1)..].Trim().TrimEnd('.');
+                var colonIndex = trimmedLine.IndexOf(':');
+                var answer = trimmedLine[(colonIndex + 1)..].Trim().TrimEnd('.');
+                _logger.LogDebug("Found answer: {Answer}", answer);
+
                 if (!string.IsNullOrWhiteSpace(questionText) && !string.IsNullOrWhiteSpace(answer))
                 {
+                    parsedCount++;
+                    _logger.LogDebug("Successfully parsed question #{Count}", parsedCount);
                     yield return new Question
                     {
                         Topic = topic,
@@ -130,6 +243,8 @@ public sealed class AiQuestionProvider : IQuestionProvider
                 questionText = null;
             }
         }
+
+        _logger.LogInformation("Total questions parsed: {Count}", parsedCount);
     }
 
     private sealed record OpenAiRequest

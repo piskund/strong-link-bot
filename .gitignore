@@ -53,3 +53,13 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 /.vs
+
+# Runtime data (game state, question pools, results)
+**/data/
+
+# Environment files (contain secrets)
+.env
+.env.*
+!.env.example
+
+.claude/

@@ -7,6 +7,7 @@ public enum GameStatus
     PreparingQuestionPool,
     ReadyToStart,
     InProgress,
+    SuddenDeath,
     Completed,
     Cancelled
 }

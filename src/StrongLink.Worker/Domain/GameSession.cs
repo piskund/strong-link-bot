@@ -28,11 +28,11 @@ public sealed class GameSession
 
     public DateTimeOffset? CompletedAt { get; set; }
 
-    public List<Player> Players { get; } = new();
+    public List<Player> Players { get; init; } = new();
 
-    public Queue<long> TurnQueue { get; } = new();
+    public Queue<long> TurnQueue { get; init; } = new();
 
-    public Dictionary<int, Queue<Question>> QuestionsByTour { get; } = new();
+    public Dictionary<int, Queue<Question>> QuestionsByTour { get; init; } = new();
 
     public int CurrentTour { get; set; }
 
@@ -41,8 +41,10 @@ public sealed class GameSession
     public Question? CurrentQuestion { get; set; }
 
     public long? CurrentPlayerId { get; set; }
-    
-    public Dictionary<string, object> Metadata { get; } = new();
+
+    public DateTimeOffset? CurrentQuestionAskedAt { get; set; }
+
+    public Dictionary<string, object> Metadata { get; init; } = new();
 
     public bool IsPlayerActive(long playerId) => Players.Any(p => p.Id == playerId && p.Status == PlayerStatus.Active);
 

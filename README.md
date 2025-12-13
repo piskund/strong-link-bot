@@ -34,7 +34,7 @@ dotnet restore
 1. Copy the environment template:
 
 ```bash
-cp StrongLink.Worker/env.template .env
+copy env_template.txt .env
 ```
 
 2. Update `.env` with your keys:
@@ -57,9 +57,24 @@ OPENAI_API_KEY=your_openai_key_here # optional if using AI questions
     "RoundsPerTour": 10,
     "AnswerTimeoutSeconds": 30,
     "EliminateLowest": 1
+  },
+  "OpenAi": {
+    "Model": "gpt-5.2",
+    "AnswerValidationModel": "gpt-4o-mini"
   }
 }
 ```
+
+**Configuration Precedence:**
+Strong Link uses multiple configuration sources with the following precedence (later sources override earlier ones):
+
+1. `appsettings.json` - Default values
+2. `appsettings.Development.json` - Development-specific values (if exists)
+3. `.env` file - Environment variables (use `SECTION__PROPERTY` format, e.g., `OPENAI__MODEL=gpt-5.2`)
+4. System environment variables
+5. Command line arguments
+
+**Example:** If you set `"Model": "gpt-4o-mini"` in `appsettings.json` but also set `OPENAI__MODEL=gpt-5.2` in `.env`, the bot will use `gpt-5.2`.
 
 ### 4. Run the Bot
 
@@ -105,7 +120,37 @@ Runs a short 3-tour demo against simulated players (default 45% accuracy).
 3. Admin prepares questions via `/prepare_pool` (AI) or `/fetch_pool` (ChGK)
 4. Admin launches the game with `/begin`
 5. Strong Link rotates through players, sends questions, scores answers, and eliminates low scorers after each tour
-6. Upon completion, the bot announces winners and exports results to JSON storage
+6. Upon completion, the bot announces winners and automatically finalizes the game
+
+### Game Finalization
+When a game ends (either by completion or `/stop` command), Strong Link automatically:
+- **Archives game results** to `data/results/` with full statistics, player scores, and used questions
+- **Archives used questions** to prevent reuse in future games
+- **Clears the session** to allow starting a new game immediately
+- **Preserves unused questions** in the pool for future games
+
+You can start a new game right after the previous one ends using the remaining questions in the pool.
+
+## Cost Optimization with Dual Models
+
+Strong Link supports using different OpenAI models for different tasks to optimize cost:
+
+- **Question Generation** (`Model`): Use powerful models like `gpt-5.2` or `gpt-4o` for high-quality, creative questions
+- **Answer Validation** (`AnswerValidationModel`): Use cheaper models like `gpt-4o-mini` for simple yes/no validation
+
+**Example configuration:**
+```json
+"OpenAi": {
+  "Model": "gpt-5.2",              // Powerful model for question generation
+  "AnswerValidationModel": "gpt-4o-mini"  // Cheap model for answer checking
+}
+```
+
+This approach significantly reduces costs since:
+- Question generation happens once per game (10-80 questions)
+- Answer validation happens every player response (potentially hundreds of times)
+
+Using `gpt-4o-mini` for validation instead of `gpt-5.2` can reduce answer validation costs by ~10-20x while maintaining accuracy.
 
 ## Configuration Options
 
@@ -116,8 +161,10 @@ Runs a short 3-tour demo against simulated players (default 45% accuracy).
 | `Game` | `Tours` | Total tours per tournament | `8` |
 | `Game` | `RoundsPerTour` | Rounds (full player rotations) per tour | `10` |
 | `Game` | `EliminateLowest` | Players removed after each tour | `1` |
+| `Game` | `UseAiAnswerValidation` | Use AI for flexible answer checking | `true` |
 | `Game` | `Topics` | Optional custom topics per tour | Default set |
-| `OpenAi` | `Model` | OpenAI chat model | `gpt-4o-mini` |
+| `OpenAi` | `Model` | OpenAI model for question generation | `gpt-4o-mini` |
+| `OpenAi` | `AnswerValidationModel` | OpenAI model for answer validation (optional, uses `Model` if not set) | `gpt-4o-mini` |
 | `Chgk` | `RandomEndpoint` | Source endpoint for ЧГК questions | `https://db.chgk.info/xml/random` |
 
 ## Architecture
@@ -159,11 +206,19 @@ tests/
 - Make sure at least two players joined via `/join`
 - Confirm a question pool was prepared (`/prepare_pool` or `/fetch_pool`)
 
+## Data Storage
+
+Strong Link maintains several data directories:
+- `data/state/` - Active game sessions (automatically cleared after game ends)
+- `data/results/` - Archived game results with statistics and player scores
+- `data/pool/` - Question pool database (unused and archived questions)
+
 ## Privacy and Ethics
 - Only stores minimal game state for active tournaments
-- Results exports saved locally under `data/results`
+- Results archives saved locally under `data/results/` with timestamps
+- Used questions archived separately to prevent reuse
 - Designed for group entertainment and educational purposes
-- No personal data persists beyond gameplay metadata
+- No personal data persists beyond gameplay metadata (Telegram IDs and display names)
 
 ## Author
 
