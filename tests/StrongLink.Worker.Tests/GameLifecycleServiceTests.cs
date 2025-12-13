@@ -5,6 +5,7 @@ using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Localization;
 using StrongLink.Worker.Persistence;
+using StrongLink.Worker.QuestionProviders;
 using StrongLink.Worker.Services;
 
 namespace StrongLink.Worker.Tests;
@@ -16,6 +17,7 @@ public class GameLifecycleServiceTests
     private readonly Mock<IQuestionPoolRepository> _poolRepository = new();
     private readonly Mock<IGameResultRepository> _resultRepository = new();
     private readonly Mock<IAnswerValidator> _answerValidator = new();
+    private readonly QuestionProviderFactory _questionProviderFactory = new(new List<IQuestionProvider>());
     private readonly LocalizationService _localization = new();
     private readonly GameLifecycleService _service;
     private readonly List<string> _sentMessages = new();
@@ -55,6 +57,7 @@ public class GameLifecycleServiceTests
             _poolRepository.Object,
             _resultRepository.Object,
             _answerValidator.Object,
+            _questionProviderFactory,
             gameOptions,
             NullLogger<GameLifecycleService>.Instance);
     }
