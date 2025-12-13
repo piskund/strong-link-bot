@@ -8,6 +8,8 @@ public sealed class BotOptions
 
     public string[] AdminUsernames { get; init; } = Array.Empty<string>();
 
+    public long[] AdminUserIds { get; init; } = Array.Empty<long>();
+
     public GameLanguage DefaultLanguage { get; init; } = GameLanguage.Russian;
 
     public QuestionSourceMode QuestionSource { get; init; } = QuestionSourceMode.AI;

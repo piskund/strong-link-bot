@@ -34,8 +34,15 @@ public sealed class LocalizationService : ILocalizationService
 
     private static IReadOnlyDictionary<string, string> BuildRussianPack() => new Dictionary<string, string>
     {
-        ["Bot.Welcome"] = "Привет! Это Strong Link — интеллектуальная викторина в стиле 'Самое сильное звено'.",
-        ["Bot.Help"] = "Доступные команды: /start, /begin, /help, /standings, /stop.",
+        ["Bot.Welcome"] = "Привет! Это Strong Link — интеллектуальная викторина в стиле 'Самое сильное звено'.\n\n" +
+                          "📋 Доступные команды:\n" +
+                          "/join — присоединиться к игре\n" +
+                          "/standings — посмотреть таблицу результатов\n" +
+                          "/help — показать эту справку",
+        ["Bot.Help"] = "📋 Доступные команды:\n" +
+                       "/join — присоединиться к игре\n" +
+                       "/standings — посмотреть таблицу результатов\n" +
+                       "/help — показать эту справку",
         ["Bot.NotAdmin"] = "Эта команда доступна только администраторам игры.",
         ["Bot.GameAlreadyRunning"] = "Игра уже запущена в этом чате.",
         ["Bot.GameNotConfigured"] = "Настройте или подготовьте пул вопросов перед стартом игры.",
@@ -47,6 +54,7 @@ public sealed class LocalizationService : ILocalizationService
         ["Bot.NoPlayers"] = "Никто не присоединился к игре. Используйте команду /join, чтобы участвовать.",
         ["Bot.ConfigUpdated"] = "Настройки игры обновлены.",
         ["Game.Start"] = "Игра Strong Link начинается! Тур {0}: {1}.",
+        ["Game.TourStart"] = "🎯 Тур {0} из {1}: {2}",
         ["Game.Round"] = "Раунд {0}/{1}. Вопрос для {2}:\n{3}\n\n⏱️ У вас есть {4} секунд на ответ!",
         ["Game.Correct"] = "Верно!",
         ["Game.Incorrect"] = "Неверно. Правильный ответ: {0}.",
@@ -63,6 +71,8 @@ public sealed class LocalizationService : ILocalizationService
         ["Game.StandingsHeader"] = "Текущие результаты:",
         ["Game.NoActiveSession"] = "Сейчас игра не запущена.",
         ["Game.Stopped"] = "Игра остановлена администратором.",
+        ["Game.Paused"] = "⏸️ Игра поставлена на паузу. Используйте /resume для продолжения.",
+        ["Game.Resumed"] = "▶️ Игра продолжена!",
         ["Game.Completed"] = "Игра завершена. Победитель: {0}!",
         ["Game.NotEnoughPlayers"] = "В игре должен быть хотя бы один игрок. Используйте /join для участия.",
         ["Game.NoQuestionPool"] = "Подготовьте пул вопросов перед стартом игры.",
@@ -72,8 +82,15 @@ public sealed class LocalizationService : ILocalizationService
 
     private static IReadOnlyDictionary<string, string> BuildEnglishPack() => new Dictionary<string, string>
     {
-        ["Bot.Welcome"] = "Welcome to Strong Link — a high-stakes quiz game for your group!",
-        ["Bot.Help"] = "Available commands: /start, /help, /standings, /stop.",
+        ["Bot.Welcome"] = "Welcome to Strong Link — a high-stakes quiz game for your group!\n\n" +
+                          "📋 Available commands:\n" +
+                          "/join — join the game\n" +
+                          "/standings — view the leaderboard\n" +
+                          "/help — show this help",
+        ["Bot.Help"] = "📋 Available commands:\n" +
+                       "/join — join the game\n" +
+                       "/standings — view the leaderboard\n" +
+                       "/help — show this help",
         ["Bot.NotAdmin"] = "This command is restricted to game administrators.",
         ["Bot.GameAlreadyRunning"] = "A game is already running in this chat.",
         ["Bot.GameNotConfigured"] = "Please prepare a question pool before starting the game.",
@@ -85,6 +102,7 @@ public sealed class LocalizationService : ILocalizationService
         ["Bot.NoPlayers"] = "No one has joined the game yet. Use /join to participate.",
         ["Bot.ConfigUpdated"] = "Game settings updated.",
         ["Game.Start"] = "Strong Link is starting! Tour {0}: {1}.",
+        ["Game.TourStart"] = "🎯 Tour {0} of {1}: {2}",
         ["Game.Round"] = "Round {0}/{1}. Question for {2}:\n{3}\n\n⏱️ You have {4} seconds to answer!",
         ["Game.Correct"] = "Correct!",
         ["Game.Incorrect"] = "Incorrect. The correct answer is {0}.",
@@ -101,6 +119,8 @@ public sealed class LocalizationService : ILocalizationService
         ["Game.StandingsHeader"] = "Current standings:",
         ["Game.NoActiveSession"] = "No active game in this chat.",
         ["Game.Stopped"] = "The game has been stopped by an administrator.",
+        ["Game.Paused"] = "⏸️ Game paused. Use /resume to continue.",
+        ["Game.Resumed"] = "▶️ Game resumed!",
         ["Game.Completed"] = "Game over. Winner: {0}!",
         ["Game.NotEnoughPlayers"] = "At least one player must join. Use /join to participate.",
         ["Game.NoQuestionPool"] = "Prepare a question pool before starting the game.",

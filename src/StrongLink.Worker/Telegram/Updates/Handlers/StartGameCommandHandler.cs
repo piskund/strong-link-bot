@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Localization;
 using StrongLink.Worker.Services;
 using Telegram.Bot;
@@ -16,14 +18,17 @@ public sealed class StartGameCommandHandler : CommandHandlerBase
         ILocalizationService localization,
         IGameSessionRepository repository,
         IGameLifecycleService lifecycleService,
-        ILogger<StartGameCommandHandler> logger)
-        : base(client, localization, repository)
+        ILogger<StartGameCommandHandler> logger,
+        IOptions<BotOptions> botOptions)
+        : base(client, localization, repository, botOptions.Value)
     {
         _lifecycleService = lifecycleService;
         _logger = logger;
     }
 
     public override string Command => "/begin";
+
+    protected override bool RequiresAdmin => true;
 
     protected override async Task HandleCommandAsync(Message message, CancellationToken cancellationToken)
     {

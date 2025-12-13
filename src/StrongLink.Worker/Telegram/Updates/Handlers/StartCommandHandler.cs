@@ -29,7 +29,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
         ILogger<StartCommandHandler> logger,
         IOptions<BotOptions> botOptions,
         IOptions<GameOptions> gameOptions)
-        : base(client, localization, repository)
+        : base(client, localization, repository, botOptions.Value)
     {
         _factory = factory;
         _poolRepository = poolRepository;
@@ -39,6 +39,8 @@ public sealed class StartCommandHandler : CommandHandlerBase
     }
 
     public override string Command => "/start";
+
+    protected override bool RequiresAdmin => true;
 
     protected override async Task HandleCommandAsync(Message message, CancellationToken cancellationToken)
     {
@@ -112,8 +114,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
             chatId, session.Players.Count);
 
         var welcome = Localization.GetString(session.Language, "Bot.Welcome");
-        var help = Localization.GetString(session.Language, "Bot.Help");
-        await Client.SendTextMessageAsync(chatId, $"{welcome}\n{help}", cancellationToken: cancellationToken);
+        await Client.SendTextMessageAsync(chatId, welcome, cancellationToken: cancellationToken);
 
         // Automatically prepare question pool
         await PrepareQuestionPoolAsync(session, cancellationToken);

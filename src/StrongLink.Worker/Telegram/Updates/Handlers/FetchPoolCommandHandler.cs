@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Localization;
 using StrongLink.Worker.QuestionProviders;
@@ -18,14 +20,17 @@ public sealed class FetchPoolCommandHandler : CommandHandlerBase
         ILocalizationService localization,
         IGameSessionRepository repository,
         QuestionProviderFactory factory,
-        ILogger<FetchPoolCommandHandler> logger)
-        : base(client, localization, repository)
+        ILogger<FetchPoolCommandHandler> logger,
+        IOptions<BotOptions> botOptions)
+        : base(client, localization, repository, botOptions.Value)
     {
         _factory = factory;
         _logger = logger;
     }
 
     public override string Command => "/fetch_pool";
+
+    protected override bool RequiresAdmin => true;
 
     protected override async Task HandleCommandAsync(Message message, CancellationToken cancellationToken)
     {

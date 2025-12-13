@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Localization;
 using StrongLink.Worker.Persistence;
@@ -21,8 +23,9 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
         IGameSessionRepository repository,
         QuestionProviderFactory factory,
         IQuestionPoolRepository poolRepository,
-        ILogger<PreparePoolCommandHandler> logger)
-        : base(client, localization, repository)
+        ILogger<PreparePoolCommandHandler> logger,
+        IOptions<BotOptions> botOptions)
+        : base(client, localization, repository, botOptions.Value)
     {
         _factory = factory;
         _poolRepository = poolRepository;
@@ -30,6 +33,8 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
     }
 
     public override string Command => "/prepare_pool";
+
+    protected override bool RequiresAdmin => true;
 
     protected override async Task HandleCommandAsync(Message message, CancellationToken cancellationToken)
     {

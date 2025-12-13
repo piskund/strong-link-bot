@@ -31,12 +31,14 @@ public class StartGameCommandHandlerTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Message());
 
+        var botOptions = Microsoft.Extensions.Options.Options.Create(new StrongLink.Worker.Configuration.BotOptions());
         _handler = new StartGameCommandHandler(
             _client.Object,
             _localization,
             _repository.Object,
             _lifecycleService.Object,
-            NullLogger<StartGameCommandHandler>.Instance);
+            NullLogger<StartGameCommandHandler>.Instance,
+            botOptions);
     }
 
     [Fact]

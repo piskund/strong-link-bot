@@ -54,13 +54,15 @@ public class PreparePoolCommandHandlerTests
             })
             .ReturnsAsync(new Message());
 
+        var botOptions = Microsoft.Extensions.Options.Options.Create(new StrongLink.Worker.Configuration.BotOptions());
         _handler = new PreparePoolCommandHandler(
             _client.Object,
             _localization,
             _repository.Object,
             _factory,
             _poolRepository.Object,
-            NullLogger<PreparePoolCommandHandler>.Instance);
+            NullLogger<PreparePoolCommandHandler>.Instance,
+            botOptions);
     }
 
     [Fact]

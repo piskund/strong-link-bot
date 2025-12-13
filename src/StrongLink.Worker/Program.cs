@@ -110,6 +110,8 @@ builder.Services.AddTransient<FetchPoolCommandHandler>();
 builder.Services.AddTransient<HelpCommandHandler>();
 builder.Services.AddTransient<StandingsCommandHandler>();
 builder.Services.AddTransient<StartGameCommandHandler>();
+builder.Services.AddTransient<PauseCommandHandler>();
+builder.Services.AddTransient<ResumeCommandHandler>();
 builder.Services.AddTransient<StopCommandHandler>();
 builder.Services.AddTransient<PoolStatusCommandHandler>();
 builder.Services.AddTransient<PoolClearCommandHandler>();
@@ -124,6 +126,8 @@ builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHand
     sp.GetRequiredService<HelpCommandHandler>(),
     sp.GetRequiredService<StandingsCommandHandler>(),
     sp.GetRequiredService<StartGameCommandHandler>(),
+    sp.GetRequiredService<PauseCommandHandler>(),
+    sp.GetRequiredService<ResumeCommandHandler>(),
     sp.GetRequiredService<StopCommandHandler>(),
     sp.GetRequiredService<PoolStatusCommandHandler>(),
     sp.GetRequiredService<PoolClearCommandHandler>(),

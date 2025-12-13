@@ -49,6 +49,8 @@ OPENAI_API_KEY=your_openai_key_here # optional if using AI questions
 ```json
 {
   "Bot": {
+    "AdminUserIds": [123456789],
+    "AdminUsernames": ["your_username"],
     "DefaultLanguage": "ru",
     "QuestionSource": "AI"
   },
@@ -64,6 +66,17 @@ OPENAI_API_KEY=your_openai_key_here # optional if using AI questions
   }
 }
 ```
+
+**Admin Authorization:**
+Admin commands (/start, /begin, /stop, /prepare_pool, etc.) can be executed by:
+1. **Telegram Group Owners and Admins** - Any user who is an owner or administrator of the Telegram group where the bot is added
+2. **Configured Admins** - Specific users listed in appsettings.json:
+   - `AdminUserIds`: Array of Telegram user IDs (recommended, more secure)
+   - `AdminUsernames`: Array of Telegram usernames without @ prefix (fallback)
+
+The bot automatically checks if a user is a group owner/admin using Telegram's built-in permissions. This means you don't need to manually configure every admin - just add the bot to your group and promote users as needed.
+
+If both arrays are empty and the bot cannot verify Telegram group admin status, all users can execute admin commands (useful for testing). User ID is more reliable than username since usernames can change.
 
 **Configuration Precedence:**
 Strong Link uses multiple configuration sources with the following precedence (later sources override earlier ones):
@@ -104,15 +117,21 @@ Runs a short 3-tour demo against simulated players (default 45% accuracy).
 
 ## Usage
 
-### Primary Commands
+### Admin Commands (Require Authorization)
 - `/start` – Initialize game session and announce setup instructions
-- `/join` – Players join the pending game lobby
-- `/prepare_pool` – Generate questions with OpenAI (admin only)
-- `/fetch_pool` – Download questions from the ChGK database (admin only)
-- `/begin` – Start the tournament once the pool is ready (admin only)
+- `/begin` – Start the tournament once the pool is ready
+- `/pause` – Pause the game in progress
+- `/resume` – Resume a paused game
+- `/stop` – Cancel the current game
+- `/prepare_pool` – Generate questions with OpenAI
+- `/fetch_pool` – Download questions from the ChGK database
+- `/pool_status` – View question pool statistics
+- `/pool_clear` – Clear unused questions (use `archive` parameter to clear all)
+
+### Player Commands (Available to All Users)
+- `/join` – Join the pending game lobby
 - `/standings` – Show live leaderboard and statuses
 - `/help` – Detailed help and command summary
-- `/stop` – Cancel the current game (admin only)
 
 ### Gameplay Flow
 1. Admin runs `/start` to prepare the lobby
@@ -156,6 +175,8 @@ Using `gpt-4o-mini` for validation instead of `gpt-5.2` can reduce answer valida
 
 | Section | Option | Description | Default |
 |---------|--------|-------------|---------|
+| `Bot` | `AdminUserIds` | Array of authorized Telegram user IDs | `[]` |
+| `Bot` | `AdminUsernames` | Array of authorized Telegram usernames | `[]` |
 | `Bot` | `DefaultLanguage` | `ru` or `en` | `ru` |
 | `Bot` | `QuestionSource` | `AI` or `Chgk` | `AI` |
 | `Game` | `Tours` | Total tours per tournament | `8` |
@@ -202,9 +223,15 @@ tests/
 - Confirm network access to `db.chgk.info` when using ChGK mode
 - Review error messages in chat (localized to game language)
 
-**Game won’t start:**
+**Game won't start:**
 - Make sure at least two players joined via `/join`
 - Confirm a question pool was prepared (`/prepare_pool` or `/fetch_pool`)
+
+**Admin commands not working:**
+- Verify you're an owner or administrator of the Telegram group
+- Check that the bot has permission to see group member information
+- Alternatively, add your user ID or username to `AdminUserIds` or `AdminUsernames` in appsettings.json
+- Get your user ID by messaging [@userinfobot](https://t.me/userinfobot)
 
 ## Data Storage
 

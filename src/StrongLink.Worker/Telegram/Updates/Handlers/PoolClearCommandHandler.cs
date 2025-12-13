@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Localization;
 using StrongLink.Worker.Persistence;
 using StrongLink.Worker.Services;
@@ -17,14 +19,17 @@ public sealed class PoolClearCommandHandler : CommandHandlerBase
         ILocalizationService localization,
         IGameSessionRepository repository,
         IQuestionPoolRepository poolRepository,
-        ILogger<PoolClearCommandHandler> logger)
-        : base(client, localization, repository)
+        ILogger<PoolClearCommandHandler> logger,
+        IOptions<BotOptions> botOptions)
+        : base(client, localization, repository, botOptions.Value)
     {
         _poolRepository = poolRepository;
         _logger = logger;
     }
 
     public override string Command => "/pool_clear";
+
+    protected override bool RequiresAdmin => true;
 
     protected override async Task HandleCommandAsync(Message message, CancellationToken cancellationToken)
     {

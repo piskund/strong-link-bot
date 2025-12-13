@@ -11,5 +11,9 @@ public interface IGameLifecycleService
     Task HandleAnswerAsync(GameSession session, long playerId, string answer, CancellationToken cancellationToken);
 
     Task StopGameAsync(GameSession session, CancellationToken cancellationToken);
+
+    Task PauseGameAsync(GameSession session, CancellationToken cancellationToken);
+
+    Task ResumeGameAsync(GameSession session, CancellationToken cancellationToken);
 }
 

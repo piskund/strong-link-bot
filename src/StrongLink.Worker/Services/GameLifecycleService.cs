@@ -209,6 +209,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                             await _messenger.SendAsync(session.ChatId, textTour, cancellationToken);
 
                             await _repository.SaveAsync(session, cancellationToken);
+                            // Note: AdvanceRoundAsync will announce the tour topic when CurrentRound becomes 1
                             await AdvanceRoundAsync(session, cancellationToken);
                             return;
                         }
@@ -241,6 +242,19 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 session.CurrentRound += 1;
                 _logger.LogInformation("Starting round {Round}/{MaxRounds} for tour {Tour}",
                     session.CurrentRound + 1, session.RoundsPerTour, session.CurrentTour);
+
+                // Announce tour topic at the start of the first round
+                if (session.CurrentRound == 1)
+                {
+                    var currentTopic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1) ?? $"Topic {session.CurrentTour}";
+                    var tourStartText = string.Format(
+                        _localization.GetString(session.Language, "Game.TourStart"),
+                        session.CurrentTour,
+                        session.Tours,
+                        currentTopic);
+                    await _messenger.SendAsync(session.ChatId, tourStartText, cancellationToken);
+                    _logger.LogInformation("Announced tour {Tour} topic: {Topic}", session.CurrentTour, currentTopic);
+                }
             }
         }
 
@@ -315,6 +329,12 @@ public sealed class GameLifecycleService : IGameLifecycleService
     public async Task HandleAnswerAsync(GameSession session, long playerId, string answer, CancellationToken cancellationToken)
     {
         _logger.LogDebug("HandleAnswerAsync: Player {PlayerId} answered: {Answer}", playerId, answer);
+
+        if (session.Status == GameStatus.Paused)
+        {
+            _logger.LogDebug("Game is paused. Ignoring answer from {PlayerId}", playerId);
+            return;
+        }
 
         if (session.CurrentQuestion is null || session.CurrentPlayerId is null)
         {
@@ -879,6 +899,119 @@ public sealed class GameLifecycleService : IGameLifecycleService
             UsedQuestions = askedQuestions,
             Statistics = statistics
         };
+    }
+
+    public async Task PauseGameAsync(GameSession session, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("PauseGameAsync called for chat {ChatId}. Current status: {Status}",
+            session.ChatId, session.Status);
+
+        if (session.Status != GameStatus.InProgress && session.Status != GameStatus.SuddenDeath)
+        {
+            _logger.LogWarning("Cannot pause game in status {Status}", session.Status);
+            var text = "⚠️ Игра не активна. Нельзя поставить на паузу.";
+            if (session.Language == GameLanguage.English)
+            {
+                text = "⚠️ Game is not active. Cannot pause.";
+            }
+            await _messenger.SendAsync(session.ChatId, text, cancellationToken);
+            return;
+        }
+
+        // Save the current status so we can restore it on resume
+        session.Metadata["PausedFromStatus"] = session.Status.ToString();
+
+        // Save the pause timestamp
+        session.Metadata["PausedAt"] = DateTimeOffset.UtcNow.ToString("o");
+
+        // If there's an active timer, cancel it and save remaining time
+        if (session.CurrentQuestionAskedAt.HasValue)
+        {
+            var elapsed = DateTimeOffset.UtcNow - session.CurrentQuestionAskedAt.Value;
+            var remaining = _gameOptions.AnswerTimeoutSeconds - elapsed.TotalSeconds;
+
+            if (remaining > 0)
+            {
+                session.Metadata["RemainingAnswerTime"] = remaining.ToString();
+                _logger.LogInformation("Saved remaining answer time: {Remaining}s", remaining);
+            }
+
+            // Cancel the active timer
+            var timerKey = (session.ChatId, session.CurrentQuestionAskedAt.Value);
+            if (_answerTimers.TryRemove(timerKey, out var cts))
+            {
+                cts.Cancel();
+                cts.Dispose();
+                _logger.LogDebug("Cancelled answer timer for chat {ChatId}", session.ChatId);
+            }
+        }
+
+        session.Status = GameStatus.Paused;
+        await _repository.SaveAsync(session, cancellationToken);
+
+        var pausedText = _localization.GetString(session.Language, "Game.Paused");
+        await _messenger.SendAsync(session.ChatId, pausedText, cancellationToken);
+
+        _logger.LogInformation("Game paused for chat {ChatId}", session.ChatId);
+    }
+
+    public async Task ResumeGameAsync(GameSession session, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("ResumeGameAsync called for chat {ChatId}. Current status: {Status}",
+            session.ChatId, session.Status);
+
+        if (session.Status != GameStatus.Paused)
+        {
+            _logger.LogWarning("Cannot resume game in status {Status}", session.Status);
+            var text = "⚠️ Игра не на паузе. Нельзя продолжить.";
+            if (session.Language == GameLanguage.English)
+            {
+                text = "⚠️ Game is not paused. Cannot resume.";
+            }
+            await _messenger.SendAsync(session.ChatId, text, cancellationToken);
+            return;
+        }
+
+        // Restore the previous status
+        if (session.Metadata.TryGetValue("PausedFromStatus", out var statusObj) &&
+            statusObj is string statusStr &&
+            Enum.TryParse<GameStatus>(statusStr, out var previousStatus))
+        {
+            session.Status = previousStatus;
+            session.Metadata.Remove("PausedFromStatus");
+            _logger.LogInformation("Restored status to {Status}", previousStatus);
+        }
+        else
+        {
+            session.Status = GameStatus.InProgress;
+            _logger.LogWarning("Could not restore previous status, defaulting to InProgress");
+        }
+
+        // Remove pause timestamp
+        session.Metadata.Remove("PausedAt");
+
+        // If there's a current question with remaining time, restart the timer
+        if (session.CurrentQuestionAskedAt.HasValue &&
+            session.Metadata.TryGetValue("RemainingAnswerTime", out var remainingObj) &&
+            remainingObj is string remainingStr &&
+            double.TryParse(remainingStr, out var remainingSeconds))
+        {
+            session.Metadata.Remove("RemainingAnswerTime");
+
+            // Adjust the question asked time to reflect the pause
+            var adjustedTime = DateTimeOffset.UtcNow.AddSeconds(-(_gameOptions.AnswerTimeoutSeconds - remainingSeconds));
+            session.CurrentQuestionAskedAt = adjustedTime;
+
+            _logger.LogInformation("Restarting answer timer with {Remaining}s remaining", remainingSeconds);
+            StartAnswerTimer(session.ChatId, adjustedTime, (int)Math.Ceiling(remainingSeconds));
+        }
+
+        await _repository.SaveAsync(session, cancellationToken);
+
+        var resumedText = _localization.GetString(session.Language, "Game.Resumed");
+        await _messenger.SendAsync(session.ChatId, resumedText, cancellationToken);
+
+        _logger.LogInformation("Game resumed for chat {ChatId}", session.ChatId);
     }
 }
 
