@@ -92,23 +92,41 @@ public sealed class AiQuestionProvider : IQuestionProvider
         var archivedContext = "";
         if (archivedQuestions != null && archivedQuestions.Count > 0)
         {
-            // Take up to 30 most recent archived questions for context
-            var recentArchived = archivedQuestions
-                .TakeLast(30)
+            // Filter by topic first, then take most recent questions
+            // Use case-insensitive comparison for topic matching
+            var topicLower = topic.ToLowerInvariant();
+            var relevantQuestions = archivedQuestions
+                .Where(q => !string.IsNullOrEmpty(q.Topic) && q.Topic.ToLowerInvariant().Contains(topicLower))
+                .TakeLast(50)  // Increased from 30 to 50
                 .Select(q => $"- {q.Text}")
                 .ToList();
 
-            if (language == GameLanguage.Russian)
+            // If we don't have many topic-specific questions, add some general ones
+            if (relevantQuestions.Count < 20)
             {
-                archivedContext = "\n\nВАЖНО: Не повторяйте эти вопросы, которые уже были заданы ранее:\n" +
-                    string.Join("\n", recentArchived) + "\n\n" +
-                    "Создайте НОВЫЕ вопросы, которые отличаются от приведённых выше.\n";
+                var generalQuestions = archivedQuestions
+                    .Where(q => string.IsNullOrEmpty(q.Topic) || !q.Topic.ToLowerInvariant().Contains(topicLower))
+                    .TakeLast(30)
+                    .Select(q => $"- {q.Text}")
+                    .ToList();
+
+                relevantQuestions.AddRange(generalQuestions);
             }
-            else
+
+            if (relevantQuestions.Count > 0)
             {
-                archivedContext = "\n\nIMPORTANT: Do NOT repeat these questions that have been asked before:\n" +
-                    string.Join("\n", recentArchived) + "\n\n" +
-                    "Create NEW questions that are different from the ones listed above.\n";
+                if (language == GameLanguage.Russian)
+                {
+                    archivedContext = $"\n\nВАЖНО: Не повторяйте и не создавайте похожие вопросы на эти {relevantQuestions.Count} вопросов, которые уже были заданы ранее:\n" +
+                        string.Join("\n", relevantQuestions) + "\n\n" +
+                        "Создайте СОВЕРШЕННО НОВЫЕ вопросы, которые значительно отличаются от приведённых выше по формулировке и содержанию.\n";
+                }
+                else
+                {
+                    archivedContext = $"\n\nIMPORTANT: Do NOT repeat or create similar questions to these {relevantQuestions.Count} questions that have been asked before:\n" +
+                        string.Join("\n", relevantQuestions) + "\n\n" +
+                        "Create COMPLETELY NEW questions that are significantly different from the ones listed above in both wording and content.\n";
+                }
             }
         }
 

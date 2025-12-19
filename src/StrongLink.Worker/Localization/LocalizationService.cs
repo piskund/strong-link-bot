@@ -34,7 +34,8 @@ public sealed class LocalizationService : ILocalizationService
 
     private static IReadOnlyDictionary<string, string> BuildRussianPack() => new Dictionary<string, string>
     {
-        ["Bot.Welcome"] = "Привет! Это Strong Link — интеллектуальная викторина в стиле 'Самое сильное звено'.\n\n" +
+        ["Bot.Welcome"] = "Привет! Это Strong Link — интеллектуальная викторина в стиле 'Самое сильное звено'.\n" +
+                          "🤖 Версия: {0}\n\n" +
                           "📋 Доступные команды:\n" +
                           "/join — присоединиться к игре\n" +
                           "/standings — посмотреть таблицу результатов\n" +
@@ -82,7 +83,8 @@ public sealed class LocalizationService : ILocalizationService
 
     private static IReadOnlyDictionary<string, string> BuildEnglishPack() => new Dictionary<string, string>
     {
-        ["Bot.Welcome"] = "Welcome to Strong Link — a high-stakes quiz game for your group!\n\n" +
+        ["Bot.Welcome"] = "Welcome to Strong Link — a high-stakes quiz game for your group!\n" +
+                          "🤖 Version: {0}\n\n" +
                           "📋 Available commands:\n" +
                           "/join — join the game\n" +
                           "/standings — view the leaderboard\n" +

@@ -27,7 +27,7 @@ public class GameLifecycleServiceTests
         _messenger
             .Setup(m => m.SendAsync(It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Callback<long, string, CancellationToken>((_, message, _) => _sentMessages.Add(message))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync(1); // Return dummy message ID
 
         // Setup answer validator to validate correct answers as true
         _answerValidator

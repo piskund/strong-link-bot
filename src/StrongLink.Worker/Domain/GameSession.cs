@@ -44,6 +44,8 @@ public sealed class GameSession
 
     public DateTimeOffset? CurrentQuestionAskedAt { get; set; }
 
+    public int? CurrentQuestionMessageId { get; set; }
+
     public Dictionary<string, object> Metadata { get; init; } = new();
 
     public bool IsPlayerActive(long playerId) => Players.Any(p => p.Id == playerId && p.Status == PlayerStatus.Active);

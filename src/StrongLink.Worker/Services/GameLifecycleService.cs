@@ -125,9 +125,9 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
                     _logger.LogDebug("Checking sudden death progress. Participants: {Count}", participants.Count);
 
-                    // Check if ties are resolved among sudden death participants
-                    var scores = participants.Select(p => p.Score).ToList();
-                    var hasConflicts = scores.Count != scores.Distinct().Count();
+                    // Check if ties are resolved among sudden death participants using SuddenDeathScore
+                    var suddenDeathScores = participants.Select(p => p.SuddenDeathScore).ToList();
+                    var hasConflicts = suddenDeathScores.Count != suddenDeathScores.Distinct().Count();
 
                     if (!hasConflicts)
                     {
@@ -136,23 +136,26 @@ public sealed class GameLifecycleService : IGameLifecycleService
                         var resolvedText = _localization.GetString(session.Language, "Game.SuddenDeathResolved");
                         await _messenger.SendAsync(session.ChatId, resolvedText, cancellationToken);
 
-                        // Determine who to eliminate based on original context
-                        // If we had 4+ players going to <3, eliminate all but highest scorer in sudden death
-                        var lowestScore = participants.Min(p => p.Score);
-                        var toEliminate = participants.Where(p => p.Score == lowestScore).ToList();
+                        // Determine who to eliminate based on SuddenDeathScore
+                        var lowestSuddenDeathScore = participants.Min(p => p.SuddenDeathScore);
+                        var toEliminate = participants.Where(p => p.SuddenDeathScore == lowestSuddenDeathScore).ToList();
 
                         foreach (var player in toEliminate)
                         {
                             player.Status = PlayerStatus.Eliminated;
-                            _logger.LogInformation("Player {PlayerName} eliminated after sudden death. Score: {Score}",
-                                player.DisplayName, player.Score);
+                            _logger.LogInformation("Player {PlayerName} eliminated after sudden death. SuddenDeathScore: {SuddenDeathScore}, MainScore: {Score}",
+                                player.DisplayName, player.SuddenDeathScore, player.Score);
                             var elimText = string.Format(
                                 _localization.GetString(session.Language, "Game.Eliminated"),
                                 player.DisplayName);
                             await _messenger.SendAsync(session.ChatId, elimText, cancellationToken);
                         }
 
-                        // Clear sudden death state
+                        // Clear sudden death state and reset sudden death scores
+                        foreach (var player in participants)
+                        {
+                            player.SuddenDeathScore = 0;
+                        }
                         session.Metadata.Remove("SuddenDeathParticipants");
                         session.Status = GameStatus.InProgress;
 
@@ -167,6 +170,12 @@ public sealed class GameLifecycleService : IGameLifecycleService
                                 // More ties - another sudden death
                                 _logger.LogInformation("More ties detected after sudden death resolution. Starting another sudden death.");
                                 var tiedPlayers = tiedGroups.SelectMany(g => g).ToList();
+
+                                // Reset sudden death scores for new round
+                                foreach (var player in tiedPlayers)
+                                {
+                                    player.SuddenDeathScore = 0;
+                                }
 
                                 session.Status = GameStatus.SuddenDeath;
                                 session.Metadata["SuddenDeathParticipants"] = tiedPlayers.Select(p => p.Id).ToList();
@@ -327,7 +336,9 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 session.AnswerTimeoutSeconds);
         }
 
-        await _messenger.SendAsync(session.ChatId, text, cancellationToken);
+        var messageId = await _messenger.SendAsync(session.ChatId, text, cancellationToken);
+        session.CurrentQuestionMessageId = messageId;
+        await _repository.SaveAsync(session, cancellationToken);
 
         // Start answer timeout timer
         StartAnswerTimer(session.ChatId, session.CurrentQuestionAskedAt.Value, session.AnswerTimeoutSeconds);
@@ -394,9 +405,19 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
         if (isCorrect)
         {
-            player.Score += 1;
+            // In sudden death mode, only update SuddenDeathScore, not the main Score
+            if (session.Status == GameStatus.SuddenDeath)
+            {
+                player.SuddenDeathScore += 1;
+                _logger.LogInformation("Player {PlayerName} answered CORRECTLY in sudden death! SuddenDeathScore: {SuddenDeathScore}",
+                    player.DisplayName, player.SuddenDeathScore);
+            }
+            else
+            {
+                player.Score += 1;
+                _logger.LogInformation("Player {PlayerName} answered CORRECTLY! Score: {Score}", player.DisplayName, player.Score);
+            }
             player.CorrectAnswers += 1;
-            _logger.LogInformation("Player {PlayerName} answered CORRECTLY! Score: {Score}", player.DisplayName, player.Score);
             var text = _localization.GetString(session.Language, "Game.Correct");
             await _messenger.SendAsync(session.ChatId, text, cancellationToken);
         }
@@ -414,7 +435,73 @@ public sealed class GameLifecycleService : IGameLifecycleService
         session.CurrentQuestion = null;
         session.CurrentPlayerId = null;
         session.CurrentQuestionAskedAt = null;
+        session.CurrentQuestionMessageId = null;
         await _repository.SaveAsync(session, cancellationToken);
+
+        // In sudden death, check immediately if ties are resolved
+        if (session.Status == GameStatus.SuddenDeath)
+        {
+            if (session.Metadata.TryGetValue("SuddenDeathParticipants", out var participantsObj) &&
+                participantsObj is List<long> participantIds)
+            {
+                var participants = participantIds
+                    .Select(id => session.FindPlayer(id))
+                    .Where(p => p != null && p.Status == PlayerStatus.Active)
+                    .Cast<Player>()
+                    .ToList();
+
+                // Check if ties are resolved among sudden death participants
+                var suddenDeathScores = participants.Select(p => p.SuddenDeathScore).ToList();
+                var hasConflicts = suddenDeathScores.Count != suddenDeathScores.Distinct().Count();
+
+                if (!hasConflicts && suddenDeathScores.Any(s => s > 0))
+                {
+                    // Ties resolved - at least one player has scored and all scores are different
+                    _logger.LogInformation("Sudden death resolved immediately. Ties broken among {Count} participants.", participants.Count);
+
+                    var resolvedText = _localization.GetString(session.Language, "Game.SuddenDeathResolved");
+                    await _messenger.SendAsync(session.ChatId, resolvedText, cancellationToken);
+
+                    // Determine who to eliminate based on SuddenDeathScore
+                    var lowestSuddenDeathScore = participants.Min(p => p.SuddenDeathScore);
+                    var toEliminate = participants.Where(p => p.SuddenDeathScore == lowestSuddenDeathScore).ToList();
+
+                    foreach (var playerToEliminate in toEliminate)
+                    {
+                        playerToEliminate.Status = PlayerStatus.Eliminated;
+                        _logger.LogInformation("Player {PlayerName} eliminated after sudden death. SuddenDeathScore: {SuddenDeathScore}, MainScore: {Score}",
+                            playerToEliminate.DisplayName, playerToEliminate.SuddenDeathScore, playerToEliminate.Score);
+                        var elimText = string.Format(
+                            _localization.GetString(session.Language, "Game.Eliminated"),
+                            playerToEliminate.DisplayName);
+                        await _messenger.SendAsync(session.ChatId, elimText, cancellationToken);
+                    }
+
+                    // Clear sudden death state
+                    foreach (var p in participants)
+                    {
+                        p.SuddenDeathScore = 0;
+                    }
+                    session.Metadata.Remove("SuddenDeathParticipants");
+                    session.Status = GameStatus.InProgress;
+                    session.TurnQueue.Clear();
+
+                    await _repository.SaveAsync(session, cancellationToken);
+
+                    // Check if game should end
+                    var remaining = session.ActivePlayers.ToList();
+                    if (remaining.Count <= 1 || session.CurrentTour > session.Tours)
+                    {
+                        await CompleteGameAsync(session, cancellationToken);
+                        return;
+                    }
+
+                    // Continue with next tour or complete game
+                    await CompleteTourAsync(session, cancellationToken);
+                    return;
+                }
+            }
+        }
 
         await AdvanceRoundAsync(session, cancellationToken);
     }
@@ -422,6 +509,13 @@ public sealed class GameLifecycleService : IGameLifecycleService
     public async Task StopGameAsync(GameSession session, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Stopping game for chat {ChatId}", session.ChatId);
+
+        // Cancel any active answer timer to prevent the game from continuing
+        if (session.CurrentQuestionAskedAt.HasValue)
+        {
+            CancelAnswerTimer(session.ChatId, session.CurrentQuestionAskedAt.Value);
+            _logger.LogInformation("Cancelled active answer timer for chat {ChatId}", session.ChatId);
+        }
 
         session.Status = GameStatus.Cancelled;
         session.CompletedAt = DateTimeOffset.UtcNow;
@@ -523,6 +617,12 @@ public sealed class GameLifecycleService : IGameLifecycleService
                     _logger.LogInformation("Entering sudden death for {Count} players tied for lowest score",
                         tiedForLowest.Count);
 
+                    // Reset sudden death scores for participants
+                    foreach (var player in tiedForLowest)
+                    {
+                        player.SuddenDeathScore = 0;
+                    }
+
                     session.Status = GameStatus.SuddenDeath;
 
                     // Track which players are in sudden death
@@ -568,6 +668,12 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 _logger.LogInformation("Final {Count} players have ties. Entering sudden death for {TiedCount} tied players.",
                     activePlayers.Count, tiedPlayers.Count);
 
+                // Reset sudden death scores for participants
+                foreach (var player in tiedPlayers)
+                {
+                    player.SuddenDeathScore = 0;
+                }
+
                 session.Status = GameStatus.SuddenDeath;
                 session.Metadata["SuddenDeathParticipants"] = tiedPlayers.Select(p => p.Id).ToList();
 
@@ -604,6 +710,32 @@ public sealed class GameLifecycleService : IGameLifecycleService
             session.CurrentTour - 1,
             nextTopic);
         await _messenger.SendAsync(session.ChatId, textTour, cancellationToken);
+
+        // Pause between tours if configured
+        if (_gameOptions.TourPauseSeconds > 0)
+        {
+            _logger.LogInformation("Pausing for {Seconds} seconds before tour {Tour}",
+                _gameOptions.TourPauseSeconds, session.CurrentTour);
+
+            var pauseMessage = session.Language == GameLanguage.Russian
+                ? $"⏸️ Следующий тур ({session.CurrentTour}) начнётся через {_gameOptions.TourPauseSeconds} секунд...\n\n" +
+                  $"📍 Тема: {nextTopic}\n\n" +
+                  $"Текущие результаты:\n{standingsText}"
+                : $"⏸️ Next tour ({session.CurrentTour}) will start in {_gameOptions.TourPauseSeconds} seconds...\n\n" +
+                  $"📍 Topic: {nextTopic}\n\n" +
+                  $"Current standings:\n{standingsText}";
+
+            await _messenger.SendAsync(session.ChatId, pauseMessage, cancellationToken);
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(_gameOptions.TourPauseSeconds), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("Tour pause was cancelled");
+            }
+        }
 
         foreach (var player in session.ActivePlayers)
         {
@@ -714,6 +846,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
             session.CurrentQuestion = null;
             session.CurrentPlayerId = null;
             session.CurrentQuestionAskedAt = null;
+            session.CurrentQuestionMessageId = null;
             await _repository.SaveAsync(session, CancellationToken.None);
 
             await AdvanceRoundAsync(session, CancellationToken.None);
@@ -755,10 +888,19 @@ public sealed class GameLifecycleService : IGameLifecycleService
             var questionsToGenerate = Math.Max(targetBuffer - questions.Count, targetBuffer);
             _logger.LogInformation("Generating {Count} new questions for topic '{Topic}'", questionsToGenerate, topic);
 
-            // Get archived questions to avoid repetition
-            var archivedQuestions = session.Metadata.TryGetValue("AskedQuestions", out var askedObj)
+            // Get archived questions from both session and pool repository to avoid repetition
+            var sessionAskedQuestions = session.Metadata.TryGetValue("AskedQuestions", out var askedObj)
                 ? ExtractAskedQuestions(askedObj)
                 : new List<Question>();
+
+            var poolArchivedQuestions = await _poolRepository.GetArchivedQuestionsAsync(cancellationToken);
+
+            // Combine both sources
+            var allArchivedQuestions = new List<Question>(sessionAskedQuestions);
+            allArchivedQuestions.AddRange(poolArchivedQuestions);
+
+            _logger.LogInformation("Using {SessionCount} session questions + {PoolCount} pool archived questions for AI context",
+                sessionAskedQuestions.Count, poolArchivedQuestions.Count);
 
             // Generate questions
             IReadOnlyDictionary<int, List<Question>> generated;
@@ -770,7 +912,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                     questionsToGenerate,
                     session.Players,
                     session.Language,
-                    archivedQuestions,
+                    allArchivedQuestions,
                     cancellationToken);
             }
             else
@@ -787,17 +929,37 @@ public sealed class GameLifecycleService : IGameLifecycleService
             var generatedList = generated.Values.FirstOrDefault() ?? new List<Question>();
             _logger.LogInformation("Generated {Count} new questions. Adding to current tour queue.", generatedList.Count);
 
-            // Add generated questions to the current tour
+            // Get existing question texts in the queue to avoid duplicates
+            var existingQuestionTexts = new HashSet<string>(
+                questions.Select(q => q.Text.Trim().ToLowerInvariant()),
+                StringComparer.OrdinalIgnoreCase);
+
+            // Add generated questions to the current tour, skipping duplicates
+            int added = 0;
+            int skipped = 0;
             foreach (var question in generatedList)
             {
-                questions.Enqueue(question with { Topic = topic });
+                var normalizedText = question.Text.Trim().ToLowerInvariant();
+                if (!existingQuestionTexts.Contains(normalizedText))
+                {
+                    questions.Enqueue(question with { Topic = topic });
+                    existingQuestionTexts.Add(normalizedText);
+                    added++;
+                }
+                else
+                {
+                    skipped++;
+                    _logger.LogDebug("Skipping duplicate question: {Question}", question.Text);
+                }
             }
+
+            _logger.LogInformation("Added {Added} unique questions, skipped {Skipped} duplicates", added, skipped);
 
             await _repository.SaveAsync(session, cancellationToken);
 
             var statusMessage = session.Language == GameLanguage.Russian
-                ? $"🔄 Сгенерировано {generatedList.Count} новых вопросов"
-                : $"🔄 Generated {generatedList.Count} new questions";
+                ? $"🔄 Добавлено {added} новых вопросов"
+                : $"🔄 Added {added} new questions";
 
             await _messenger.SendAsync(session.ChatId, statusMessage, cancellationToken);
         }

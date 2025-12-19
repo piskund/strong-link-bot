@@ -14,6 +14,9 @@ public sealed record Player
 
     public int IncorrectAnswers { get; set; }
 
+    // Separate score for sudden death - doesn't count toward total
+    public int SuddenDeathScore { get; set; }
+
     public bool IsEligibleForMedals => Status == PlayerStatus.Active;
 }
 

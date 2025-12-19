@@ -10,6 +10,12 @@ public sealed class GameOptions
 
     public int EliminateLowest { get; init; } = 1;
 
+    /// <summary>
+    /// Pause duration in seconds between tours. During this pause, the bot shows
+    /// current standings, the next tour's topic, and a countdown. Set to 0 to disable pauses.
+    /// </summary>
+    public int TourPauseSeconds { get; init; } = 60;
+
     public string[] Topics { get; init; } = Array.Empty<string>();
 
     /// <summary>

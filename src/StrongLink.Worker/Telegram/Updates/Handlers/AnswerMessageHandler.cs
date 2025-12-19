@@ -42,6 +42,21 @@ public sealed class AnswerMessageHandler : IUpdateHandler
             return;
         }
 
+        // Only accept answers from the current player
+        if (session.CurrentPlayerId is null || message.From.Id != session.CurrentPlayerId.Value)
+        {
+            // Ignore messages from other players
+            return;
+        }
+
+        // Only accept answers that are replies to the question message
+        if (session.CurrentQuestionMessageId.HasValue &&
+            message.ReplyToMessage?.MessageId != session.CurrentQuestionMessageId.Value)
+        {
+            // Ignore messages that are not replies to the current question
+            return;
+        }
+
         await _lifecycleService.HandleAnswerAsync(session, message.From.Id, message.Text ?? string.Empty, cancellationToken);
     }
 }

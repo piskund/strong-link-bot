@@ -15,11 +15,12 @@ public sealed class ChatMessenger : IChatMessenger
         _logger = logger;
     }
 
-    public async Task SendAsync(long chatId, string message, CancellationToken cancellationToken)
+    public async Task<int> SendAsync(long chatId, string message, CancellationToken cancellationToken)
     {
         try
         {
-            await _client.SendTextMessageAsync(chatId, message, cancellationToken: cancellationToken);
+            var sentMessage = await _client.SendTextMessageAsync(chatId, message, cancellationToken: cancellationToken);
+            return sentMessage.MessageId;
         }
         catch (Exception ex)
         {

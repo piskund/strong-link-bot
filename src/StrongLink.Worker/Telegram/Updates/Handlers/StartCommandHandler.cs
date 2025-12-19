@@ -113,7 +113,9 @@ public sealed class StartCommandHandler : CommandHandlerBase
         _logger.LogInformation("Session initialized for chat {ChatId}. Current players: {PlayerCount}",
             chatId, session.Players.Count);
 
-        var welcome = Localization.GetString(session.Language, "Bot.Welcome");
+        var welcome = string.Format(
+            Localization.GetString(session.Language, "Bot.Welcome"),
+            VersionInfo.Version);
         await Client.SendTextMessageAsync(chatId, welcome, cancellationToken: cancellationToken);
 
         // Automatically prepare question pool
