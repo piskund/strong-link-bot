@@ -24,5 +24,21 @@ public sealed class GameOptions
     /// even with minor spelling differences, word order variations, etc.
     /// </summary>
     public bool UseAiAnswerValidation { get; init; } = true;
+
+    /// <summary>
+    /// Enable scheduled games that start automatically at a specified time each day.
+    /// </summary>
+    public bool EnableScheduledGames { get; init; } = false;
+
+    /// <summary>
+    /// The time in UTC when scheduled games should start (default: 18:00 / 6 PM UTC).
+    /// </summary>
+    public TimeSpan ScheduledGameTimeUtc { get; init; } = new TimeSpan(18, 0, 0);
+
+    /// <summary>
+    /// Number of minutes to wait for players to join after the scheduled time
+    /// before auto-starting the game (default: 10 minutes).
+    /// </summary>
+    public int ScheduledGameWaitMinutes { get; init; } = 10;
 }
 

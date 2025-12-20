@@ -115,6 +115,7 @@ builder.Services.AddTransient<ResumeCommandHandler>();
 builder.Services.AddTransient<StopCommandHandler>();
 builder.Services.AddTransient<PoolStatusCommandHandler>();
 builder.Services.AddTransient<PoolClearCommandHandler>();
+builder.Services.AddTransient<ScheduleCommandHandler>();
 builder.Services.AddTransient<AnswerMessageHandler>();
 
 builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHandler[]
@@ -131,6 +132,7 @@ builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHand
     sp.GetRequiredService<StopCommandHandler>(),
     sp.GetRequiredService<PoolStatusCommandHandler>(),
     sp.GetRequiredService<PoolClearCommandHandler>(),
+    sp.GetRequiredService<ScheduleCommandHandler>(),
     sp.GetRequiredService<AnswerMessageHandler>()
 });
 
@@ -141,10 +143,33 @@ builder.Services.AddSingleton<ITelegramBotClient>(sp =>
     {
         throw new InvalidOperationException("Telegram bot token is not configured. Update appsettings.json or environment variables.");
     }
-    return new TelegramBotClient(options.Token);
+
+    // Configure HttpClient with better timeout and connection settings for long-running bots
+    var httpClient = new HttpClient
+    {
+        Timeout = TimeSpan.FromSeconds(100) // Default is 100 seconds for long-polling
+    };
+
+    // Configure socket options to handle connection keep-alive
+    var httpHandler = new SocketsHttpHandler
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5), // Recycle connections every 5 minutes
+        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2), // Close idle connections after 2 minutes
+        KeepAlivePingDelay = TimeSpan.FromSeconds(20), // Send keep-alive pings
+        KeepAlivePingTimeout = TimeSpan.FromSeconds(10), // Timeout for keep-alive pings
+        EnableMultipleHttp2Connections = true
+    };
+
+    var clientWithHandler = new HttpClient(httpHandler)
+    {
+        Timeout = TimeSpan.FromSeconds(100)
+    };
+
+    return new TelegramBotClient(options.Token, clientWithHandler);
 });
 
 builder.Services.AddHostedService<Worker>();
+builder.Services.AddHostedService<ScheduledGameService>();
 
 var host = builder.Build();
 host.Run();

@@ -68,14 +68,35 @@ public sealed class TelegramBotService : IBotLifetimeService
 
     private Task HandleErrorAsync(ITelegramBotClient bot, Exception exception, CancellationToken cancellationToken)
     {
-        var errorMessage = exception switch
+        // Determine if this is a transient error that we should just log and continue
+        var isTransientError = exception switch
         {
-            ApiRequestException apiRequestException =>
-                $"Telegram API Error:\n[{apiRequestException.ErrorCode}] {apiRequestException.Message}",
-            _ => exception.ToString()
+            RequestException re when re.InnerException is System.Net.Http.HttpRequestException or System.IO.IOException or System.Net.Sockets.SocketException => true,
+            System.Net.Http.HttpRequestException => true,
+            System.IO.IOException => true,
+            System.Net.Sockets.SocketException => true,
+            _ => false
         };
 
-        _logger.LogError(errorMessage);
+        if (isTransientError)
+        {
+            // Log transient errors at a lower level to avoid log spam
+            _logger.LogWarning(exception, "Transient connection error occurred. The bot will automatically retry.");
+        }
+        else
+        {
+            // Log unexpected errors at error level
+            var errorMessage = exception switch
+            {
+                ApiRequestException apiRequestException =>
+                    $"Telegram API Error:\n[{apiRequestException.ErrorCode}] {apiRequestException.Message}",
+                _ => exception.Message
+            };
+
+            _logger.LogError(exception, "Error in Telegram bot: {ErrorMessage}", errorMessage);
+        }
+
+        // Always return completed task - let the library handle retries
         return Task.CompletedTask;
     }
 }

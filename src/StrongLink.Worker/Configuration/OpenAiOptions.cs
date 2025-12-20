@@ -10,8 +10,9 @@ public sealed class OpenAiOptions
     public string Model { get; init; } = "gpt-4o-mini";
 
     /// <summary>
-    /// Model to use for answer validation (e.g., gpt-4o-mini for cost efficiency)
-    /// If not specified, uses the same model as question generation
+    /// Model to use for answer validation. By default uses the same model as question generation
+    /// for best accuracy. Can be set to a lighter model (e.g., gpt-4o-mini) for cost efficiency.
+    /// If not specified, uses the same model as question generation.
     /// </summary>
     public string? AnswerValidationModel { get; init; }
 
