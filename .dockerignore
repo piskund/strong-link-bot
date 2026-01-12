@@ -1,0 +1,77 @@
+# Environment files (never include in image)
+.env
+.env.*
+*.env
+
+# Build outputs and binaries
+**/bin/
+**/obj/
+**/out/
+build/
+publish/
+
+# IDE and editor files
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+*.user
+*.suo
+*.userprefs
+.vscode-test/
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+LICENSE
+SECURITY.md
+CONTRIBUTING.md
+
+# Test files and results
+**/tests/
+**/*.Tests/
+TestResults/
+coverage/
+*.trx
+*.coverage
+
+# Logs and data (will be mounted as volumes)
+*.log
+logs/
+**/logs/
+data/
+**/data/
+
+# NuGet packages
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker files (avoid recursion)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Temporary files
+**/temp/
+**/tmp/
+*.tmp
+
+# Editor config (optional, you might want to include this)
+.editorconfig
+
+# CI/CD files (optional)
+.github/
+.gitlab-ci.yml
+azure-pipelines.yml

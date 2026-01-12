@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  stronglink-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stronglink-bot
+    restart: unless-stopped
+
+    environment:
+      # These will be overridden by .env file if present
+      - ASPNETCORE_ENVIRONMENT=Production
+      - DOTNET_ENVIRONMENT=Production
+
+    # Mount .env file for configuration
+    env_file:
+      - .env
+
+    volumes:
+      # Persist question pool (unused and archived questions)
+      - ./data/pool:/app/data/pool
+      # Persist active game state
+      - ./data/state:/app/data/state
+      # Persist game results
+      - ./data/results:/app/data/results
+      # Persist logs (optional)
+      - ./logs:/app/logs
+
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Network mode (use bridge for isolation)
+    networks:
+      - stronglink-network
+
+networks:
+  stronglink-network:
+    driver: bridge

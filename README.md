@@ -93,14 +93,71 @@ Strong Link uses multiple configuration sources with the following precedence (l
 
 ### 4. Run the Bot
 
+#### Option A: Run with .NET (Development)
+
 ```bash
-dotnet run --project StrongLink.Worker
+dotnet run --project src/StrongLink.Worker
 ```
+
+#### Option B: Run with Docker (Production)
+
+**Prerequisites:**
+- Docker Desktop, Rancher Desktop, or Docker Engine installed
+
+**1. Build and run with Docker Compose (Recommended):**
+
+```bash
+# Make sure you have a .env file in the root directory with your tokens
+docker-compose up -d
+```
+
+**2. Or build and run manually:**
+
+```bash
+# Build the Docker image
+docker build -t stronglink-bot .
+
+# Run the container
+docker run -d \
+  --name stronglink-bot \
+  --env-file .env \
+  -v ./data/results:/app/data/results \
+  -v ./logs:/app/logs \
+  --restart unless-stopped \
+  stronglink-bot
+```
+
+**3. Manage the container:**
+
+```bash
+# View logs
+docker-compose logs -f
+# or
+docker logs -f stronglink-bot
+
+# Stop the bot
+docker-compose down
+# or
+docker stop stronglink-bot
+
+# Restart the bot
+docker-compose restart
+# or
+docker restart stronglink-bot
+```
+
+**Docker Configuration:**
+- Question pools persisted in `./data/pool` directory
+- Active game state persisted in `./data/state` directory
+- Game results persisted in `./data/results` directory
+- Logs saved to `./logs` directory (optional)
+- Container runs as non-root user for security
+- Resource limits: 512MB memory, 1 CPU (adjust in docker-compose.yml if needed)
 
 ### Standalone Demo (no Telegram required)
 
 ```bash
-dotnet run --project StrongLink.Worker -- --standalone
+dotnet run --project src/StrongLink.Worker -- --standalone
 ```
 
 Runs a short 3-tour demo against simulated players (default 45% accuracy).
