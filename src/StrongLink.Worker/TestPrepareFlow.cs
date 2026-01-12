@@ -1,10 +1,8 @@
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Localization;
-using StrongLink.Worker.Persistence;
 using StrongLink.Worker.QuestionProviders;
 
 namespace StrongLink.Worker;
@@ -110,6 +108,7 @@ public static class TestPrepareFlow
                     session.RoundsPerTour,
                     session.Players,
                     session.Language,
+                    true, // matureContent
                     CancellationToken.None);
 
                 Console.WriteLine($"  Provider returned {generated.Count} dictionary entries");

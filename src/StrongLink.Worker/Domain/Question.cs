@@ -11,5 +11,7 @@ public sealed record Question
     public string? SourceId { get; init; }
 
     public string? SourceName { get; init; }
+
+    public string? ImageUrl { get; init; }
 }
 

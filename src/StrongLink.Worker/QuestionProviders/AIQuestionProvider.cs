@@ -1,7 +1,5 @@
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -37,9 +35,10 @@ public sealed class AiQuestionProvider : IQuestionProvider
         int roundsPerTour,
         IReadOnlyList<Player> players,
         GameLanguage language,
+        bool matureContent,
         CancellationToken cancellationToken)
     {
-        return await PrepareQuestionPoolAsync(topics, tours, roundsPerTour, players, language, null, cancellationToken);
+        return await PrepareQuestionPoolAsync(topics, tours, roundsPerTour, players, language, matureContent, null, DifficultyLevel.Easy, cancellationToken);
     }
 
     public async Task<IReadOnlyDictionary<int, List<Question>>> PrepareQuestionPoolAsync(
@@ -48,7 +47,22 @@ public sealed class AiQuestionProvider : IQuestionProvider
         int roundsPerTour,
         IReadOnlyList<Player> players,
         GameLanguage language,
+        bool matureContent,
         IReadOnlyList<Question>? archivedQuestions,
+        CancellationToken cancellationToken)
+    {
+        return await PrepareQuestionPoolAsync(topics, tours, roundsPerTour, players, language, matureContent, archivedQuestions, DifficultyLevel.Easy, cancellationToken);
+    }
+
+    public async Task<IReadOnlyDictionary<int, List<Question>>> PrepareQuestionPoolAsync(
+        IReadOnlyList<string> topics,
+        int tours,
+        int roundsPerTour,
+        IReadOnlyList<Player> players,
+        GameLanguage language,
+        bool matureContent,
+        IReadOnlyList<Question>? archivedQuestions,
+        DifficultyLevel difficultyLevel,
         CancellationToken cancellationToken)
     {
         var result = new Dictionary<int, List<Question>>();
@@ -57,17 +71,21 @@ public sealed class AiQuestionProvider : IQuestionProvider
         {
             try
             {
-                var topic = topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
-                var questionsNeeded = Math.Max(1, players.Count) * roundsPerTour;
-                _logger.LogInformation("Requesting {Count} AI questions for topic {Topic}", questionsNeeded, topic);
+                var topicOrNull = topics.ElementAtOrDefault(tourIndex);
+                var isRandomTopic = string.IsNullOrEmpty(topicOrNull);
+                var topic = isRandomTopic ? "random" : topicOrNull; // Placeholder - AI will generate its own topic when "random"
 
-                var prompt = BuildPrompt(language, topic, questionsNeeded, archivedQuestions);
+                var questionsNeeded = Math.Max(1, players.Count) * roundsPerTour;
+                _logger.LogInformation("Requesting {Count} AI questions for topic {Topic} (random: {IsRandom})",
+                    questionsNeeded, topic, isRandomTopic);
+
+                var prompt = BuildPrompt(language, topic!, questionsNeeded, matureContent, difficultyLevel, archivedQuestions, isRandomTopic);
                 _logger.LogDebug("Prompt: {Prompt}", prompt);
 
                 var response = await RequestOpenAiAsync(prompt, cancellationToken);
                 _logger.LogDebug("Received response from OpenAI");
 
-                var parsed = ParseQuestions(response, topic);
+                var parsed = ParseQuestions(response, topic!);
                 var questionList = parsed.ToList();  // Keep ALL parsed questions, not just the needed amount
                 _logger.LogInformation("Parsed {Count} questions from OpenAI response (requested {Needed})",
                     questionList.Count, questionsNeeded);
@@ -84,9 +102,12 @@ public sealed class AiQuestionProvider : IQuestionProvider
         return result;
     }
 
-    private string BuildPrompt(GameLanguage language, string topic, int questions, IReadOnlyList<Question>? archivedQuestions = null)
+    private string BuildPrompt(GameLanguage language, string topic, int questions, bool matureContent, DifficultyLevel difficultyLevel, IReadOnlyList<Question>? archivedQuestions = null, bool isRandomTopic = false)
     {
         var pack = _localizationService.GetLanguagePack(language);
+
+        // Calculate how many questions should have images
+        var questionsWithImages = (int)Math.Ceiling(questions * _options.ImagePercentage / 100.0);
 
         // Build context from archived questions to avoid repetition
         var archivedContext = "";
@@ -97,9 +118,12 @@ public sealed class AiQuestionProvider : IQuestionProvider
             var topicLower = topic.ToLowerInvariant();
             var relevantQuestions = archivedQuestions
                 .Where(q => !string.IsNullOrEmpty(q.Topic) && q.Topic.ToLowerInvariant().Contains(topicLower))
-                .TakeLast(50)  // Increased from 30 to 50
+                .TakeLast(100)  // Increased from 50 to 100 to show more examples
                 .Select(q => $"- {q.Text}")
                 .ToList();
+
+            _logger.LogInformation("Found {Count} archived questions for topic '{Topic}' to exclude from generation",
+                relevantQuestions.Count, topic);
 
             // If we don't have many topic-specific questions, add some general ones
             if (relevantQuestions.Count < 20)
@@ -110,6 +134,7 @@ public sealed class AiQuestionProvider : IQuestionProvider
                     .Select(q => $"- {q.Text}")
                     .ToList();
 
+                _logger.LogInformation("Adding {Count} general archived questions to exclusion list", generalQuestions.Count);
                 relevantQuestions.AddRange(generalQuestions);
             }
 
@@ -117,48 +142,165 @@ public sealed class AiQuestionProvider : IQuestionProvider
             {
                 if (language == GameLanguage.Russian)
                 {
-                    archivedContext = $"\n\nВАЖНО: Не повторяйте и не создавайте похожие вопросы на эти {relevantQuestions.Count} вопросов, которые уже были заданы ранее:\n" +
+                    archivedContext = $"\n\n🚫🚫🚫 КРИТИЧЕСКИ ВАЖНО - СТРОГО ИЗБЕГАЙТЕ ДУБЛИКАТОВ! 🚫🚫🚫\n\n" +
+                        $"Эти {relevantQuestions.Count} вопросов УЖЕ были использованы в недавних играх.\n" +
+                        $"⛔ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять их в любой форме:\n\n" +
                         string.Join("\n", relevantQuestions) + "\n\n" +
-                        "Создайте СОВЕРШЕННО НОВЫЕ вопросы, которые значительно отличаются от приведённых выше по формулировке и содержанию.\n";
+                        "✅ ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ К НОВЫМ ВОПРОСАМ:\n\n" +
+                        "1️⃣ ПРОВЕРЬТЕ КАЖДЫЙ ВОПРОС: Убедитесь, что он НЕ похож на вопросы из списка выше\n" +
+                        "2️⃣ ИЗБЕГАЙТЕ ОЧЕВИДНОГО: Не задавайте самые известные, банальные вопросы по теме\n" +
+                        "   ❌ Плохо: \"Кто написал Война и мир?\" - слишком популярный вопрос\n" +
+                        "   ✅ Хорошо: \"Какое произведение Толстого начинается с описания вечера у Анны Павловны Шерер?\"\n" +
+                        "3️⃣ КОПАЙТЕ ГЛУБЖЕ: Задавайте вопросы о менее известных деталях, персонажах второго плана, необычных фактах\n" +
+                        "4️⃣ МЕНЯЙТЕ УГОЛ: Вместо \"Кто автор?\" спросите о сюжете, персонажах, датах, влиянии, критике\n" +
+                        "5️⃣ РАЗНООБРАЗИЕ: Охватывайте разные периоды, страны, жанры, стили\n" +
+                        "6️⃣ НИКАКИХ ПЕРЕФРАЗИРОВОК: Не переформулируйте существующие вопросы - придумайте совершенно новые!\n\n" +
+                        "⚠️ ВНИМАНИЕ: Если вы сгенерируете вопрос, похожий на уже использованный, это будет считаться ошибкой!\n\n";
                 }
                 else
                 {
-                    archivedContext = $"\n\nIMPORTANT: Do NOT repeat or create similar questions to these {relevantQuestions.Count} questions that have been asked before:\n" +
+                    archivedContext = $"\n\n🚫🚫🚫 CRITICAL - STRICTLY AVOID DUPLICATES! 🚫🚫🚫\n\n" +
+                        $"These {relevantQuestions.Count} questions have ALREADY been used in recent games.\n" +
+                        $"⛔ ABSOLUTELY FORBIDDEN to repeat them in ANY form:\n\n" +
                         string.Join("\n", relevantQuestions) + "\n\n" +
-                        "Create COMPLETELY NEW questions that are significantly different from the ones listed above in both wording and content.\n";
+                        "✅ MANDATORY REQUIREMENTS FOR NEW QUESTIONS:\n\n" +
+                        "1️⃣ CHECK EACH QUESTION: Ensure it's NOT similar to any question from the list above\n" +
+                        "2️⃣ AVOID THE OBVIOUS: Don't ask the most well-known, cliché questions about the topic\n" +
+                        "   ❌ Bad: \"Who wrote War and Peace?\" - too popular\n" +
+                        "   ✅ Good: \"Which Tolstoy novel begins with a description of Anna Pavlovna Scherer's soirée?\"\n" +
+                        "3️⃣ DIG DEEPER: Ask about lesser-known details, secondary characters, unusual facts\n" +
+                        "4️⃣ CHANGE THE ANGLE: Instead of \"Who wrote it?\" ask about plot, characters, dates, influence, criticism\n" +
+                        "5️⃣ DIVERSITY: Cover different periods, countries, genres, styles\n" +
+                        "6️⃣ NO REPHRASING: Don't reformulate existing questions - create completely new ones!\n\n" +
+                        "⚠️ WARNING: Generating a question similar to an already used one will be considered an error!\n\n";
                 }
             }
         }
 
+        var matureContentGuidance = matureContent
+            ? (language == GameLanguage.Russian
+                ? "- Контент 18+: Допускаются взрослые темы (эротика, искусство эпохи Возрождения с обнажённой натурой, мифология с откровенными сюжетами, история сексуальности и т.д.). Вопросы должны быть информативными и образовательными, но не вульгарными.\n"
+                : "- Mature Content (18+): Adult themes are allowed (erotica, Renaissance art with nudity, mythology with explicit themes, history of sexuality, etc.). Questions should be informative and educational, not vulgar.\n")
+            : (language == GameLanguage.Russian
+                ? "- Семейный контент: Избегайте взрослых тем. Все вопросы должны быть подходящими для семейной аудитории.\n"
+                : "- Family-Friendly Content: Avoid adult themes. All questions should be suitable for a family audience.\n");
+
+        // Add special guidance for movie/film topics
+        var isMovieTopic = !isRandomTopic && (
+            topic.Contains("кино", StringComparison.OrdinalIgnoreCase) ||
+            topic.Contains("фильм", StringComparison.OrdinalIgnoreCase) ||
+            topic.Contains("movie", StringComparison.OrdinalIgnoreCase) ||
+            topic.Contains("cinema", StringComparison.OrdinalIgnoreCase) ||
+            topic.Contains("film", StringComparison.OrdinalIgnoreCase));
+
+        var movieGuidance = isMovieTopic
+            ? (language == GameLanguage.Russian
+                ? "\n\n🎬 ВАЖНО ДЛЯ ТЕМЫ \"КИНО/ФИЛЬМЫ\":\n" +
+                  "✅ ФОКУСИРУЙТЕСЬ НА:\n" +
+                  "- Конкретных фильмах и их сюжетах\n" +
+                  "- Актерах и их известных ролях\n" +
+                  "- Режиссерах и их фильмографии\n" +
+                  "- Наградах (Оскар, Золотая пальмовая ветвь и т.д.)\n" +
+                  "- Известных цитатах из фильмов\n" +
+                  "- Персонажах и их именах\n" +
+                  "- Годах выхода известных фильмов\n" +
+                  "- Жанрах и франшизах\n\n" +
+                  "❌ ИЗБЕГАЙТЕ ТЕХНИЧЕСКИХ АСПЕКТОВ:\n" +
+                  "- Вопросов о кинопроизводстве (как снимают фильмы)\n" +
+                  "- Операторской работы и камер\n" +
+                  "- Монтажа и пост-продакшена\n" +
+                  "- Спецэффектов и технологий CGI\n" +
+                  "- Технического оборудования\n\n"
+                : "\n\n🎬 IMPORTANT FOR \"MOVIES/CINEMA\" TOPIC:\n" +
+                  "✅ FOCUS ON:\n" +
+                  "- Specific movies and their plots\n" +
+                  "- Actors and their famous roles\n" +
+                  "- Directors and their filmography\n" +
+                  "- Awards (Oscars, Palme d'Or, etc.)\n" +
+                  "- Famous movie quotes\n" +
+                  "- Characters and their names\n" +
+                  "- Release years of famous films\n" +
+                  "- Genres and franchises\n\n" +
+                  "❌ AVOID TECHNICAL ASPECTS:\n" +
+                  "- Questions about filmmaking (how movies are made)\n" +
+                  "- Cinematography and cameras\n" +
+                  "- Editing and post-production\n" +
+                  "- Special effects and CGI technology\n" +
+                  "- Technical equipment\n\n")
+            : "";
+
+        var topicInstruction = isRandomTopic
+            ? (language == GameLanguage.Russian
+                ? "СНАЧАЛА выберите случайную интересную тему для викторины (например: история, наука, искусство, литература, спорт, кино, география, технологии, культура и т.д.). Затем составьте набор викторинных вопросов на русском языке по выбранной теме."
+                : "FIRST choose a random interesting trivia topic (e.g., history, science, art, literature, sports, movies, geography, technology, culture, etc.). Then create a set of trivia questions in English on that chosen topic.")
+            : (language == GameLanguage.Russian
+                ? $"Составьте набор викторинных вопросов на русском языке по теме \"{topic}\".{movieGuidance}"
+                : $"Create a set of trivia questions in English on the topic \"{topic}\".{movieGuidance}");
+
+        var difficultyInstructions = GetDifficultyInstructions(difficultyLevel, language);
+
         var instruction = language == GameLanguage.Russian
             ?
-            "Составьте набор викторинных вопросов на русском языке по теме \"{1}\". Учитывайте следующие требования:\n" +
-            "- Сгенерируйте {0} вопросов по теме \"{1}\".\n" +
-            "- Каждый вопрос должен быть понятным и коротким, рассчитан на широкую аудиторию (не только знатоков).\n" +
+            topicInstruction + " Учитывайте следующие требования:\n" +
+            (isRandomTopic
+                ? "- Сгенерируйте {0} вопросов по выбранной вами теме.\n"
+                : "- Сгенерируйте {0} вопросов по теме \"{1}\".\n") +
+            difficultyInstructions +
+            "- Каждый вопрос должен быть понятным и коротким, рассчитан на широкую аудиторию.\n" +
             "- К каждому вопросу дайте правильный краткий ответ (одно слово или несколько слов).\n" +
-            "- Вопросы должны быть интересными и заставлять думать, но не слишком сложными.\n" +
+            "- Вопросы должны быть интересными и заставлять думать, используя логику и ассоциации.\n" +
             "- Избегайте двусмысленных вопросов - у каждого вопроса должен быть один чёткий правильный ответ.\n" +
             "- Вопросы должны покрывать разные аспекты темы.\n" +
+            matureContentGuidance +
+            "- Для примерно {2} вопросов добавьте ПРЯМОЙ URL изображения из НАДЁЖНЫХ открытых источников.\n" +
+            "  ВАЖНО - Используйте ТОЛЬКО эти проверенные источники:\n" +
+            "  • Unsplash CDN: https://images.unsplash.com/photo-...\n" +
+            "  • Wikimedia Commons DIRECT links: https://upload.wikimedia.org/wikipedia/commons/thumb/.../400px-filename.jpg (используйте 320px, 400px или 640px вместо больших размеров!)\n" +
+            "  • Pixabay CDN: https://pixabay.com/get/...\n" +
+            "  • Pexels CDN: https://images.pexels.com/photos/...\n" +
+            "  НЕ используйте ссылки на страницы Wikipedia (wiki/File:...) - только прямые ссылки upload.wikimedia.org!\n" +
+            "  ⚠️ РАЗМЕР ВАЖЕН: Для Wikimedia используйте МЕНЬШИЕ размеры (320px, 400px, 640px) - большие изображения (800px+) часто не загружаются!\n" +
+            "  Ссылка ДОЛЖНА заканчиваться на .jpg, .png, или .webp\n" +
+            "  Выбирайте вопросы, для которых изображение действительно полезно (достопримечательности, животные, растения, флаги, карты и т.д.).\n" +
             archivedContext +
             "- Оформите вывод в точном формате:\n" +
             "Вопрос: <текст вопроса>?\n" +
             "Ответ: <текст ответа>\n" +
+            "Изображение: <URL изображения> (только если применимо)\n" +
             "(Не добавляйте никаких пояснений или комментариев.)"
             :
-            "Create a set of trivia questions in English on the topic \"{1}\". Follow these requirements:\n" +
-            "- Generate {0} questions about the topic \"{1}\".\n" +
-            "- Each question should be clear and concise, suitable for a general audience (non-experts).\n" +
+            topicInstruction + " Follow these requirements:\n" +
+            (isRandomTopic
+                ? "- Generate {0} questions about your chosen topic.\n"
+                : "- Generate {0} questions about the topic \"{1}\".\n") +
+            difficultyInstructions +
+            "- Each question should be clear and concise, suitable for a general audience.\n" +
             "- Provide a correct short answer for each question (one word or a few words at most).\n" +
-            "- Questions should be interesting and thought-provoking, but not too difficult.\n" +
+            "- Questions should be interesting and thought-provoking, using logic and associations.\n" +
             "- Avoid ambiguous questions - each should have a single clear correct answer.\n" +
             "- Ensure the questions are varied and cover different aspects of the topic.\n" +
+            matureContentGuidance +
+            "- For approximately {2} questions, include a DIRECT image URL from RELIABLE public sources.\n" +
+            "  IMPORTANT - Use ONLY these verified sources:\n" +
+            "  • Unsplash CDN: https://images.unsplash.com/photo-...\n" +
+            "  • Wikimedia Commons DIRECT links: https://upload.wikimedia.org/wikipedia/commons/thumb/.../400px-filename.jpg (use 320px, 400px or 640px instead of large sizes!)\n" +
+            "  • Pixabay CDN: https://pixabay.com/get/...\n" +
+            "  • Pexels CDN: https://images.pexels.com/photos/...\n" +
+            "  Do NOT use Wikipedia page links (wiki/File:...) - only direct upload.wikimedia.org links!\n" +
+            "  ⚠️ SIZE MATTERS: For Wikimedia use SMALLER sizes (320px, 400px, 640px) - large images (800px+) often fail to load!\n" +
+            "  URL MUST end with .jpg, .png, or .webp\n" +
+            "  Choose questions where an image is genuinely helpful (landmarks, animals, plants, flags, maps, etc.).\n" +
             archivedContext +
             "- Format the output exactly as:\n" +
             "Question: <question text>?\n" +
             "Answer: <answer text>\n" +
+            "Image: <image URL> (only if applicable)\n" +
             "(No additional explanations or commentary.)";
 
-        return string.Format(instruction, questions, topic);
+        // When isRandomTopic is true, we don't pass topic to format string (it's not used in the prompt)
+        return isRandomTopic
+            ? string.Format(instruction, questions, questionsWithImages)
+            : string.Format(instruction, questions, topic, questionsWithImages);
     }
 
     private async Task<OpenAiResponse> RequestOpenAiAsync(string prompt, CancellationToken cancellationToken)
@@ -222,6 +364,8 @@ public sealed class AiQuestionProvider : IQuestionProvider
         _logger.LogInformation("Split into {Count} lines", lines.Length);
 
         string? questionText = null;
+        string? answerText = null;
+        string? imageUrl = null;
         var parsedCount = 0;
 
         foreach (var line in lines)
@@ -233,8 +377,25 @@ public sealed class AiQuestionProvider : IQuestionProvider
                 trimmedLine.StartsWith("Вопрос:", StringComparison.OrdinalIgnoreCase) ||
                 trimmedLine.StartsWith("Q:", StringComparison.OrdinalIgnoreCase))
             {
+                // If we have a pending question without an image line, yield it now
+                if (!string.IsNullOrWhiteSpace(questionText) && !string.IsNullOrWhiteSpace(answerText))
+                {
+                    parsedCount++;
+                    _logger.LogDebug("Successfully parsed question #{Count} (no image)", parsedCount);
+                    yield return new Question
+                    {
+                        Topic = topic,
+                        Text = questionText + '?',
+                        Answer = answerText,
+                        SourceName = "OpenAI",
+                        ImageUrl = null
+                    };
+                }
+
                 var colonIndex = trimmedLine.IndexOf(':');
                 questionText = trimmedLine[(colonIndex + 1)..].Trim().TrimEnd('?');
+                answerText = null;
+                imageUrl = null;
                 _logger.LogDebug("Found question: {Question}", questionText);
             }
             else if (trimmedLine.StartsWith("Answer:", StringComparison.OrdinalIgnoreCase) ||
@@ -242,27 +403,234 @@ public sealed class AiQuestionProvider : IQuestionProvider
                      trimmedLine.StartsWith("A:", StringComparison.OrdinalIgnoreCase))
             {
                 var colonIndex = trimmedLine.IndexOf(':');
-                var answer = trimmedLine[(colonIndex + 1)..].Trim().TrimEnd('.');
-                _logger.LogDebug("Found answer: {Answer}", answer);
+                answerText = trimmedLine[(colonIndex + 1)..].Trim().TrimEnd('.');
+                _logger.LogDebug("Found answer: {Answer}", answerText);
+            }
+            else if (trimmedLine.StartsWith("Image:", StringComparison.OrdinalIgnoreCase) ||
+                     trimmedLine.StartsWith("Изображение:", StringComparison.OrdinalIgnoreCase))
+            {
+                var colonIndex = trimmedLine.IndexOf(':');
+                imageUrl = trimmedLine[(colonIndex + 1)..].Trim();
+                _logger.LogDebug("Found image URL: {ImageUrl}", imageUrl);
 
-                if (!string.IsNullOrWhiteSpace(questionText) && !string.IsNullOrWhiteSpace(answer))
+                // Yield the question with the image
+                if (!string.IsNullOrWhiteSpace(questionText) && !string.IsNullOrWhiteSpace(answerText))
                 {
                     parsedCount++;
-                    _logger.LogDebug("Successfully parsed question #{Count}", parsedCount);
+                    _logger.LogDebug("Successfully parsed question #{Count} with image", parsedCount);
                     yield return new Question
                     {
                         Topic = topic,
                         Text = questionText + '?',
-                        Answer = answer,
-                        SourceName = "OpenAI"
+                        Answer = answerText,
+                        SourceName = "OpenAI",
+                        ImageUrl = imageUrl
                     };
-                }
 
-                questionText = null;
+                    questionText = null;
+                    answerText = null;
+                    imageUrl = null;
+                }
             }
         }
 
+        // Handle last question if it doesn't have an image line
+        if (!string.IsNullOrWhiteSpace(questionText) && !string.IsNullOrWhiteSpace(answerText))
+        {
+            parsedCount++;
+            _logger.LogDebug("Successfully parsed final question #{Count} (no image)", parsedCount);
+            yield return new Question
+            {
+                Topic = topic,
+                Text = questionText + '?',
+                Answer = answerText,
+                SourceName = "OpenAI",
+                ImageUrl = null
+            };
+        }
+
         _logger.LogInformation("Total questions parsed: {Count}", parsedCount);
+    }
+
+    /// <summary>
+    /// Generates an image for a question using DALL-E API.
+    /// This is an optional enhancement that can be enabled via configuration.
+    /// </summary>
+    private async Task<string?> GenerateImageWithDallEAsync(Question question, CancellationToken cancellationToken)
+    {
+        if (!_options.UseDallEImageGeneration)
+        {
+            return null;
+        }
+
+        try
+        {
+            _logger.LogInformation("Generating DALL-E image for question: {Question}", question.Text);
+
+            // Create a descriptive prompt for DALL-E based on the question
+            var imagePrompt = $"A clear, simple, educational illustration for a trivia question about: {question.Text}. " +
+                            $"The image should help visualize the concept related to the answer: {question.Answer}. " +
+                            "Style: clean, educational, suitable for all ages, no text in image.";
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, _options.DallEEndpoint);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
+
+            var body = new DallERequest
+            {
+                Model = _options.DallEModel,
+                Prompt = imagePrompt,
+                N = 1,
+                Size = _options.DallEImageSize
+            };
+
+            var json = JsonSerializer.Serialize(body, new JsonSerializerOptions
+            {
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            });
+
+            request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+            _logger.LogDebug("Sending DALL-E request: {Endpoint}", _options.DallEEndpoint);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogWarning("DALL-E API returned {StatusCode}: {Error}", response.StatusCode, errorContent);
+                return null; // Gracefully fail - question will have no image
+            }
+
+            var payload = await JsonSerializer.DeserializeAsync<DallEResponse>(
+                await response.Content.ReadAsStreamAsync(cancellationToken),
+                cancellationToken: cancellationToken);
+
+            var imageUrl = payload?.Data?.FirstOrDefault()?.Url;
+            if (!string.IsNullOrWhiteSpace(imageUrl))
+            {
+                _logger.LogInformation("Successfully generated DALL-E image: {Url}", imageUrl);
+                return imageUrl;
+            }
+
+            _logger.LogWarning("DALL-E response did not contain an image URL");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to generate image with DALL-E for question: {Question}", question.Text);
+            return null; // Gracefully fail - question will have no image
+        }
+    }
+
+    private static string GetDifficultyInstructions(DifficultyLevel difficulty, GameLanguage language)
+    {
+        return difficulty switch
+        {
+            DifficultyLevel.Easy => language == GameLanguage.Russian
+                ? "\n🎯 ЛЕГКИЙ УРОВЕНЬ - ПРОСТЫЕ И ПОНЯТНЫЕ ВОПРОСЫ:\n\n" +
+                  "✅ СТИЛЬ ВОПРОСОВ:\n" +
+                  "   • Используйте прямые, простые формулировки\n" +
+                  "   • Спрашивайте о широко известных фактах\n" +
+                  "   • Задавайте вопросы о популярных темах, известных людях, событиях\n" +
+                  "   • Пример: \"Какой город является столицей России?\" → Ответ: \"Москва\"\n" +
+                  "   • Пример: \"Кто написал роман 'Война и мир'?\" → Ответ: \"Лев Толстой\"\n" +
+                  "   • Пример: \"Сколько океанов на Земле?\" → Ответ: \"Пять\"\n\n" +
+                  "✅ ВЫБИРАЙТЕ ТЕМЫ:\n" +
+                  "   • Базовые факты из школьной программы\n" +
+                  "   • Общеизвестные исторические события и личности\n" +
+                  "   • Популярные фильмы, книги, песни\n" +
+                  "   • Простую географию и природу\n\n" +
+                  "❌ ИЗБЕГАЙТЕ:\n" +
+                  "   • Сложных загадок и метафор\n" +
+                  "   • Малоизвестных деталей и фактов\n" +
+                  "   • Требования точных дат (кроме самых известных)\n" +
+                  "   • Узкоспециализированных знаний\n\n"
+                : "\n🎯 EASY LEVEL - SIMPLE AND STRAIGHTFORWARD QUESTIONS:\n\n" +
+                  "✅ QUESTION STYLE:\n" +
+                  "   • Use direct, simple formulations\n" +
+                  "   • Ask about widely known facts\n" +
+                  "   • Focus on popular topics, famous people, major events\n" +
+                  "   • Example: \"What is the capital of France?\" → Answer: \"Paris\"\n" +
+                  "   • Example: \"Who wrote 'Romeo and Juliet'?\" → Answer: \"William Shakespeare\"\n" +
+                  "   • Example: \"How many continents are there?\" → Answer: \"Seven\"\n\n" +
+                  "✅ CHOOSE TOPICS ABOUT:\n" +
+                  "   • Basic facts from general education\n" +
+                  "   • Well-known historical events and figures\n" +
+                  "   • Popular movies, books, songs\n" +
+                  "   • Simple geography and nature\n\n" +
+                  "❌ AVOID:\n" +
+                  "   • Complex riddles and metaphors\n" +
+                  "   • Obscure details and facts\n" +
+                  "   • Requiring exact dates (except most famous ones)\n" +
+                  "   • Specialized knowledge\n\n",
+
+            DifficultyLevel.Medium => language == GameLanguage.Russian
+                ? "\n🎯 СРЕДНИЙ УРОВЕНЬ - БАЛАНС МЕЖДУ ЗНАНИЯМИ И ЛОГИКОЙ:\n\n" +
+                  "✅ СТИЛЬ ВОПРОСОВ:\n" +
+                  "   • Комбинируйте прямые вопросы с элементами логики\n" +
+                  "   • Используйте умеренные метафоры и описания\n" +
+                  "   • Задавайте вопросы о менее очевидных, но не слишком узких фактах\n" +
+                  "   • Пример: \"Этот русский поэт погиб на дуэли в возрасте 37 лет.\" → Ответ: \"Александр Пушкин\"\n" +
+                  "   • Пример: \"Какой металл называют 'белым золотом'?\" → Ответ: \"Платина\"\n" +
+                  "   • Пример: \"В какой стране появился балет?\" → Ответ: \"Италия\"\n\n" +
+                  "✅ ВЫБИРАЙТЕ ТЕМЫ:\n" +
+                  "   • Факты, требующие базовой эрудиции\n" +
+                  "   • Логические связи между событиями\n" +
+                  "   • Культурные феномены средней известности\n" +
+                  "   • Интересные научные факты\n\n" +
+                  "❌ ИЗБЕГАЙТЕ:\n" +
+                  "   • Слишком простых школьных вопросов\n" +
+                  "   • Очень сложных загадок\n" +
+                  "   • Требования узкоспециализированных знаний\n\n"
+                : "\n🎯 MEDIUM LEVEL - BALANCE BETWEEN KNOWLEDGE AND LOGIC:\n\n" +
+                  "✅ QUESTION STYLE:\n" +
+                  "   • Combine direct questions with elements of logic\n" +
+                  "   • Use moderate metaphors and descriptions\n" +
+                  "   • Ask about less obvious but not too obscure facts\n" +
+                  "   • Example: \"This Russian poet died in a duel at age 37.\" → Answer: \"Alexander Pushkin\"\n" +
+                  "   • Example: \"Which metal is called 'white gold'?\" → Answer: \"Platinum\"\n" +
+                  "   • Example: \"In which country did ballet originate?\" → Answer: \"Italy\"\n\n" +
+                  "✅ CHOOSE TOPICS ABOUT:\n" +
+                  "   • Facts requiring basic erudition\n" +
+                  "   • Logical connections between events\n" +
+                  "   • Moderately well-known cultural phenomena\n" +
+                  "   • Interesting scientific facts\n\n" +
+                  "❌ AVOID:\n" +
+                  "   • Too simple school-level questions\n" +
+                  "   • Very complex riddles\n" +
+                  "   • Highly specialized knowledge\n\n",
+
+            DifficultyLevel.Hard => language == GameLanguage.Russian
+                ? "\n🎯 СЛОЖНЫЙ УРОВЕНЬ - СТИЛЬ \"ЧТО? ГДЕ? КОГДА?\" - ЛОГИКА И АССОЦИАЦИИ:\n\n" +
+                  "✅ ПРЕДПОЧИТАЙТЕ вопросы, на которые можно ДОГАДАТЬСЯ:\n" +
+                  "   • Используйте метафоры, иносказания, творческие описания\n" +
+                  "   • Описывайте свойства, характеристики, функции объекта\n" +
+                  "   • Задавайте загадки через ассоциации и логические связи\n" +
+                  "   • Пример: \"В одной из сказок современного писателя Евгения Клюева заглавный персонаж худел день за днём, пока не умер от полного истощения. Таково было его предназначение. Назовите этого персонажа двумя словами.\" → Ответ: \"Отрывной календарь\"\n" +
+                  "   • Пример: \"Этот музыкальный инструмент получил своё название от итальянских слов 'тихо' и 'громко', отражая его главную особенность.\" → Ответ: \"Фортепиано\"\n" +
+                  "   • Пример: \"В древности это вещество ценилось на вес золота и использовалось как валюта. Сейчас оно есть на каждой кухне.\" → Ответ: \"Соль\"\n\n" +
+                  "❌ ИЗБЕГАЙТЕ узкоспецифических знаний:\n" +
+                  "   • НЕ требуйте точных дат (кроме самых известных событий)\n" +
+                  "   • НЕ спрашивайте имена малоизвестных людей, технические термины\n" +
+                  "   • НЕ задавайте вопросы, требующие профессиональных знаний\n" +
+                  "   • Плохо: \"В каком году родился композитор Антон Рубинштейн?\" (узкие знания)\n" +
+                  "   • Хорошо: \"Этот русский композитор основал первую в России консерваторию. Его фамилия совпадает с названием драгоценного камня.\" (можно догадаться)\n\n"
+                : "\n🎯 HARD LEVEL - 'QUIZ SHOW' STYLE - LOGIC AND ASSOCIATIONS:\n\n" +
+                  "✅ PREFER questions that can be FIGURED OUT:\n" +
+                  "   • Use metaphors, allegories, creative descriptions\n" +
+                  "   • Describe properties, characteristics, functions of the subject\n" +
+                  "   • Create riddles through associations and logical connections\n" +
+                  "   • Example: \"In a fairy tale by modern writer Eugene Klyuev, the title character grew thinner day by day until dying of complete exhaustion. That was its purpose. Name this character in two words.\" → Answer: \"Tear-off calendar\"\n" +
+                  "   • Example: \"This musical instrument got its name from Italian words for 'soft' and 'loud', reflecting its key feature.\" → Answer: \"Pianoforte\"\n" +
+                  "   • Example: \"In ancient times this substance was valued its weight in gold and used as currency. Now it's in every kitchen.\" → Answer: \"Salt\"\n\n" +
+                  "❌ AVOID highly specialized knowledge:\n" +
+                  "   • DON'T require exact dates (except most famous events)\n" +
+                  "   • DON'T ask about obscure people's names or technical jargon\n" +
+                  "   • DON'T create questions requiring professional expertise\n" +
+                  "   • Bad: \"In what year was composer Anton Rubinstein born?\" (narrow knowledge)\n" +
+                  "   • Good: \"This Russian composer founded Russia's first conservatory. His surname matches the name of a precious stone.\" (can be figured out)\n\n",
+
+            _ => ""
+        };
     }
 
     private sealed record OpenAiRequest
@@ -287,6 +655,33 @@ public sealed class AiQuestionProvider : IQuestionProvider
         {
             [JsonPropertyName("message")]
             public required OpenAiMessage Message { get; init; }
+        }
+    }
+
+    private sealed record DallERequest
+    {
+        [JsonPropertyName("model")]
+        public required string Model { get; init; }
+
+        [JsonPropertyName("prompt")]
+        public required string Prompt { get; init; }
+
+        [JsonPropertyName("n")]
+        public int N { get; init; }
+
+        [JsonPropertyName("size")]
+        public required string Size { get; init; }
+    }
+
+    private sealed record DallEResponse
+    {
+        [JsonPropertyName("data")]
+        public IReadOnlyList<DallEImageData>? Data { get; init; }
+
+        public sealed record DallEImageData
+        {
+            [JsonPropertyName("url")]
+            public string? Url { get; init; }
         }
     }
 }

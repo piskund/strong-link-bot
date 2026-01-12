@@ -1,8 +1,8 @@
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Localization;
+using StrongLink.Worker.Persistence;
 using StrongLink.Worker.Services;
 using Telegram.Bot;
 using Telegram.Bot.Types;
@@ -14,11 +14,13 @@ public sealed class JoinCommandHandler : CommandHandlerBase
     private readonly ILogger<JoinCommandHandler> _logger;
     private readonly BotOptions _botOptions;
     private readonly GameOptions _gameOptions;
+    private readonly IQuestionPoolRepository _poolRepository;
 
     public JoinCommandHandler(
         ITelegramBotClient client,
         ILocalizationService localization,
         IGameSessionRepository repository,
+        IQuestionPoolRepository poolRepository,
         IOptions<BotOptions> botOptions,
         IOptions<GameOptions> gameOptions,
         ILogger<JoinCommandHandler> logger)
@@ -27,6 +29,7 @@ public sealed class JoinCommandHandler : CommandHandlerBase
         _logger = logger;
         _botOptions = botOptions.Value;
         _gameOptions = gameOptions.Value;
+        _poolRepository = poolRepository;
     }
 
     public override string Command => "/join";
@@ -42,17 +45,26 @@ public sealed class JoinCommandHandler : CommandHandlerBase
         {
             _logger.LogWarning("No session found for chat {ChatId}, creating new session", chatId);
 
+            // Use smart topic selection to prioritize topics with unused questions
+            var selectedTopics = await TopicSelector.SelectOptimalTopicsAsync(
+                _poolRepository,
+                _gameOptions.Topics,
+                _gameOptions.Tours,
+                _logger,
+                cancellationToken);
+
             // Auto-create session for better UX
             session = new GameSession
             {
                 ChatId = chatId,
                 Language = _botOptions.DefaultLanguage,
                 QuestionSourceMode = _botOptions.QuestionSource,
-                Topics = _gameOptions.Topics,
+                Topics = selectedTopics,
                 Tours = _gameOptions.Tours,
                 RoundsPerTour = _gameOptions.RoundsPerTour,
                 AnswerTimeoutSeconds = _gameOptions.AnswerTimeoutSeconds,
                 EliminateLowest = _gameOptions.EliminateLowest,
+                MatureContent = _gameOptions.MatureContentEnabled,
                 Status = GameStatus.AwaitingPlayers
             };
 

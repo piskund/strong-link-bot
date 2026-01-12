@@ -107,11 +107,12 @@ public class PreparePoolCommandHandlerTests
         };
 
         _questionProvider.Setup(p => p.PrepareQuestionPoolAsync(
-                It.IsAny<string[]>(),
+                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<IReadOnlyList<Player>>(),
                 It.IsAny<GameLanguage>(),
+                It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(questions);
 
@@ -156,11 +157,12 @@ public class PreparePoolCommandHandlerTests
         };
 
         _questionProvider.Setup(p => p.PrepareQuestionPoolAsync(
-                It.IsAny<string[]>(),
+                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<IReadOnlyList<Player>>(),
                 It.IsAny<GameLanguage>(),
+                It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(questions);
 
@@ -176,7 +178,7 @@ public class PreparePoolCommandHandlerTests
         Assert.NotNull(savedSession);
         Assert.Equal(GameStatus.ReadyToStart, savedSession.Status);
         Assert.NotEmpty(savedSession.QuestionsByTour);
-        Assert.Equal(2, _sentMessages.Count); // Preparing message + Ready message
+        Assert.True(_sentMessages.Count >= 2, $"Expected at least 2 messages, but got {_sentMessages.Count}"); // Preparing message + progress messages + Ready message
         _repository.Verify(r => r.SaveAsync(It.IsAny<GameSession>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -228,11 +230,12 @@ public class PreparePoolCommandHandlerTests
 
         // Should NOT generate new questions when enough in pool
         _questionProvider.Verify(p => p.PrepareQuestionPoolAsync(
-            It.IsAny<string[]>(),
+            It.IsAny<IReadOnlyList<string>>(),
             It.IsAny<int>(),
             It.IsAny<int>(),
             It.IsAny<IReadOnlyList<Player>>(),
             It.IsAny<GameLanguage>(),
+            It.IsAny<bool>(),
             It.IsAny<CancellationToken>()), Times.Never);
 
         // Should reuse from pool
@@ -283,11 +286,12 @@ public class PreparePoolCommandHandlerTests
         };
 
         _questionProvider.Setup(p => p.PrepareQuestionPoolAsync(
-                It.IsAny<string[]>(),
+                It.IsAny<IReadOnlyList<string>>(),
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<IReadOnlyList<Player>>(),
                 It.IsAny<GameLanguage>(),
+                It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(generatedQuestions);
 
@@ -297,11 +301,12 @@ public class PreparePoolCommandHandlerTests
         // Assert
         // Should generate new questions
         _questionProvider.Verify(p => p.PrepareQuestionPoolAsync(
-            It.IsAny<string[]>(),
+            It.IsAny<IReadOnlyList<string>>(),
             It.IsAny<int>(),
             It.IsAny<int>(),
             It.IsAny<IReadOnlyList<Player>>(),
             It.IsAny<GameLanguage>(),
+            It.IsAny<bool>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Should add generated questions to pool

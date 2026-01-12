@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -142,6 +141,7 @@ public static class TestAnswerValidation
                     testCase.CorrectAnswer,
                     testCase.Question,
                     testCase.Language,
+                    DifficultyLevel.Medium,
                     CancellationToken.None);
 
                 var status = result == testCase.ExpectedResult ? "✓ PASS" : "✗ FAIL";

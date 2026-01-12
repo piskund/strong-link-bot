@@ -1,5 +1,4 @@
 using System.Text;
-using Microsoft.Extensions.Logging;
 using StrongLink.Worker.Localization;
 using StrongLink.Worker.Services;
 using Telegram.Bot;

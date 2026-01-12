@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -28,6 +27,7 @@ public sealed class AiAnswerValidator : IAnswerValidator
         string correctAnswer,
         string question,
         GameLanguage language,
+        DifficultyLevel difficultyLevel,
         CancellationToken cancellationToken)
     {
         // First try simple normalization for exact matches (to save API calls)
@@ -46,7 +46,7 @@ public sealed class AiAnswerValidator : IAnswerValidator
             _logger.LogDebug("Using AI to validate answer. User: '{UserAnswer}', Correct: '{CorrectAnswer}'",
                 userAnswer, correctAnswer);
 
-            var prompt = BuildValidationPrompt(userAnswer, correctAnswer, question, language);
+            var prompt = BuildValidationPrompt(userAnswer, correctAnswer, question, language, difficultyLevel);
             var response = await RequestOpenAiAsync(prompt, cancellationToken);
 
             var result = response.Choices.FirstOrDefault()?.Message.Content?.Trim().ToLowerInvariant();
@@ -63,19 +63,101 @@ public sealed class AiAnswerValidator : IAnswerValidator
         }
     }
 
-    private string BuildValidationPrompt(string userAnswer, string correctAnswer, string question, GameLanguage language)
+    private string BuildValidationPrompt(string userAnswer, string correctAnswer, string question, GameLanguage language, DifficultyLevel difficultyLevel)
     {
+        var strictnessGuidance = GetStrictnessGuidance(difficultyLevel, language);
+
         return language == GameLanguage.Russian
             ? $"Вопрос: {question}\n\n" +
               $"Правильный ответ: {correctAnswer}\n" +
               $"Ответ пользователя: {userAnswer}\n\n" +
-              $"Является ли ответ пользователя семантически правильным? Учитывайте небольшие орфографические различия, " +
-              $"разный порядок слов, сокращения и синонимы. Ответьте только одним словом: 'Верно' или 'Неверно'."
+              strictnessGuidance +
+              $"Ответьте только одним словом: 'Верно' или 'Неверно'."
             : $"Question: {question}\n\n" +
               $"Correct answer: {correctAnswer}\n" +
               $"User's answer: {userAnswer}\n\n" +
-              $"Is the user's answer semantically correct? Consider minor spelling differences, " +
-              $"word order variations, abbreviations, and synonyms. Answer with just one word: 'Correct' or 'Incorrect'.";
+              strictnessGuidance +
+              $"Answer with just one word: 'Correct' or 'Incorrect'.";
+    }
+
+    private static string GetStrictnessGuidance(DifficultyLevel difficulty, GameLanguage language)
+    {
+        return difficulty switch
+        {
+            DifficultyLevel.Easy => language == GameLanguage.Russian
+                ? "Является ли ответ пользователя ДОСТАТОЧНО БЛИЗКИМ к правильному?\n\n" +
+                  "🟢 ЛЕГКИЙ УРОВЕНЬ - БУДЬТЕ СНИСХОДИТЕЛЬНЫ:\n" +
+                  "✅ ПРИНИМАЙТЕ ответы, если:\n" +
+                  "   • Основной смысл совпадает (даже если формулировка отличается)\n" +
+                  "   • Есть небольшие орфографические ошибки\n" +
+                  "   • Использованы синонимы или близкие понятия\n" +
+                  "   • Указана только часть ответа, но ключевая\n" +
+                  "   • Порядок слов отличается\n\n" +
+                  "❌ ОТКЛОНЯЙТЕ только если:\n" +
+                  "   • Ответ явно неправильный по смыслу\n" +
+                  "   • Указано совершенно другое понятие\n\n"
+                : "Is the user's answer CLOSE ENOUGH to the correct answer?\n\n" +
+                  "🟢 EASY LEVEL - BE LENIENT:\n" +
+                  "✅ ACCEPT answers if:\n" +
+                  "   • The core meaning matches (even if wording differs)\n" +
+                  "   • There are minor spelling mistakes\n" +
+                  "   • Synonyms or related terms are used\n" +
+                  "   • Only part of the answer is given, but it's the key part\n" +
+                  "   • Word order is different\n\n" +
+                  "❌ REJECT only if:\n" +
+                  "   • The answer is clearly wrong in meaning\n" +
+                  "   • A completely different concept is stated\n\n",
+
+            DifficultyLevel.Medium => language == GameLanguage.Russian
+                ? "Является ли ответ пользователя семантически правильным?\n\n" +
+                  "🟡 СРЕДНИЙ УРОВЕНЬ - СБАЛАНСИРОВАННАЯ ПРОВЕРКА:\n" +
+                  "✅ Учитывайте:\n" +
+                  "   • Небольшие орфографические различия\n" +
+                  "   • Разный порядок слов\n" +
+                  "   • Сокращения и распространённые синонимы\n" +
+                  "   • Близкие по смыслу формулировки\n\n" +
+                  "❌ Требуйте точность в:\n" +
+                  "   • Ключевых терминах и именах\n" +
+                  "   • Основном смысле ответа\n\n"
+                : "Is the user's answer semantically correct?\n\n" +
+                  "🟡 MEDIUM LEVEL - BALANCED VALIDATION:\n" +
+                  "✅ Consider:\n" +
+                  "   • Minor spelling differences\n" +
+                  "   • Word order variations\n" +
+                  "   • Abbreviations and common synonyms\n" +
+                  "   • Close semantic formulations\n\n" +
+                  "❌ Require accuracy in:\n" +
+                  "   • Key terms and names\n" +
+                  "   • Core meaning of the answer\n\n",
+
+            DifficultyLevel.Hard => language == GameLanguage.Russian
+                ? "Является ли ответ пользователя семантически правильным?\n\n" +
+                  "🔴 СЛОЖНЫЙ УРОВЕНЬ - СТРОГАЯ ПРОВЕРКА:\n" +
+                  "✅ Принимайте только если:\n" +
+                  "   • Смысл полностью совпадает\n" +
+                  "   • Допустимы только очевидные синонимы\n" +
+                  "   • Порядок слов может отличаться, но термины точные\n" +
+                  "   • Минимальные орфографические ошибки (1-2 буквы)\n\n" +
+                  "❌ Будьте строги к:\n" +
+                  "   • Неточным формулировкам\n" +
+                  "   • Частичным ответам\n" +
+                  "   • Приблизительным определениям\n\n"
+                : "Is the user's answer semantically correct?\n\n" +
+                  "🔴 HARD LEVEL - STRICT VALIDATION:\n" +
+                  "✅ Accept only if:\n" +
+                  "   • Meaning matches completely\n" +
+                  "   • Only obvious synonyms are acceptable\n" +
+                  "   • Word order can differ but terms must be precise\n" +
+                  "   • Minimal spelling errors (1-2 letters)\n\n" +
+                  "❌ Be strict about:\n" +
+                  "   • Imprecise formulations\n" +
+                  "   • Partial answers\n" +
+                  "   • Approximate definitions\n\n",
+
+            _ => language == GameLanguage.Russian
+                ? "Является ли ответ пользователя семантически правильным? Учитывайте небольшие орфографические различия, разный порядок слов, сокращения и синонимы.\n\n"
+                : "Is the user's answer semantically correct? Consider minor spelling differences, word order variations, abbreviations, and synonyms.\n\n"
+        };
     }
 
     private async Task<OpenAiResponse> RequestOpenAiAsync(string prompt, CancellationToken cancellationToken)

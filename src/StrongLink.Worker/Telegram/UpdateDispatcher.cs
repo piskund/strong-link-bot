@@ -1,5 +1,3 @@
-using Microsoft.Extensions.Logging;
-using StrongLink.Worker.Services;
 using StrongLink.Worker.Telegram.Updates;
 using Telegram.Bot.Types;
 

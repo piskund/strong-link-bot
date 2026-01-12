@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -61,8 +60,13 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 chatId, existingSession.Status, existingSession.Players.Count);
         }
 
-        // Randomize topics for variety
-        var shuffledTopics = _gameOptions.Topics.OrderBy(_ => Random.Shared.Next()).ToList();
+        // Use smart topic selection to prioritize topics with unused questions
+        var selectedTopics = await TopicSelector.SelectOptimalTopicsAsync(
+            _poolRepository,
+            _gameOptions.Topics,
+            _gameOptions.Tours,
+            _logger,
+            cancellationToken);
 
         // Clear completed or cancelled sessions to allow starting a new game
         GameSession session;
@@ -76,11 +80,13 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 ChatId = chatId,
                 Language = _botOptions.DefaultLanguage,
                 QuestionSourceMode = _botOptions.QuestionSource,
-                Topics = shuffledTopics,
+                DifficultyLevel = _gameOptions.DifficultyLevel,
+                Topics = selectedTopics,
                 Tours = _gameOptions.Tours,
                 RoundsPerTour = _gameOptions.RoundsPerTour,
                 AnswerTimeoutSeconds = _gameOptions.AnswerTimeoutSeconds,
                 EliminateLowest = _gameOptions.EliminateLowest,
+                MatureContent = _gameOptions.MatureContentEnabled,
                 Status = GameStatus.AwaitingPlayers
             };
         }
@@ -91,11 +97,13 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 ChatId = chatId,
                 Language = _botOptions.DefaultLanguage,
                 QuestionSourceMode = _botOptions.QuestionSource,
-                Topics = shuffledTopics,
+                DifficultyLevel = _gameOptions.DifficultyLevel,
+                Topics = selectedTopics,
                 Tours = _gameOptions.Tours,
                 RoundsPerTour = _gameOptions.RoundsPerTour,
                 AnswerTimeoutSeconds = _gameOptions.AnswerTimeoutSeconds,
                 EliminateLowest = _gameOptions.EliminateLowest,
+                MatureContent = _gameOptions.MatureContentEnabled,
                 Status = GameStatus.AwaitingPlayers
             };
         }
@@ -172,6 +180,13 @@ public sealed class StartCommandHandler : CommandHandlerBase
 
                     var provider = _factory.Resolve(session.QuestionSourceMode);
 
+                    // Notify chat that generation is starting for this tour
+                    var generatingMessage = session.Language == GameLanguage.Russian
+                        ? $"🤖 Генерирую вопросы для тура {tourIndex + 1}: \"{topic}\"..."
+                        : $"🤖 Generating questions for tour {tourIndex + 1}: \"{topic}\"...";
+
+                    await Client.SendTextMessageAsync(chatId, generatingMessage, cancellationToken: cancellationToken);
+
                     // Pass archived questions to AI provider to avoid repetition
                     IReadOnlyDictionary<int, List<Question>> generated;
                     if (provider is AiQuestionProvider aiProvider)
@@ -182,6 +197,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
                             session.RoundsPerTour,
                             session.Players,
                             session.Language,
+                            session.MatureContent,
                             archivedQuestions,
                             cancellationToken);
                     }
@@ -193,6 +209,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
                             session.RoundsPerTour,
                             session.Players,
                             session.Language,
+                            session.MatureContent,
                             cancellationToken);
                     }
 
@@ -257,7 +274,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 _logger.LogInformation("Starting background preparation for tours 2-{MaxTour} for chat {ChatId}",
                     session.Tours, chatId);
                 _ = PrepareRemainingToursInBackgroundAsync(session.Id, chatId, session.Topics, session.Tours,
-                    session.RoundsPerTour, session.Players, session.Language, session.QuestionSourceMode);
+                    session.RoundsPerTour, session.Players, session.Language, session.QuestionSourceMode, session.MatureContent);
             }
         }
         catch (Exception ex)
@@ -278,7 +295,8 @@ public sealed class StartCommandHandler : CommandHandlerBase
         int roundsPerTour,
         IReadOnlyList<Player> players,
         GameLanguage language,
-        QuestionSourceMode questionSourceMode)
+        QuestionSourceMode questionSourceMode,
+        bool matureContent)
     {
         try
         {
@@ -333,6 +351,20 @@ public sealed class StartCommandHandler : CommandHandlerBase
 
                     var provider = _factory.Resolve(questionSourceMode);
 
+                    // Notify chat that background generation is starting for this tour
+                    var generatingMessage = language == GameLanguage.Russian
+                        ? $"🤖 Генерирую вопросы для тура {tourIndex + 1}: \"{topic}\"..."
+                        : $"🤖 Generating questions for tour {tourIndex + 1}: \"{topic}\"...";
+
+                    try
+                    {
+                        await Client.SendTextMessageAsync(chatId, generatingMessage, cancellationToken: CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to send generation notification to chat {ChatId}", chatId);
+                    }
+
                     IReadOnlyDictionary<int, List<Question>> generated;
                     if (provider is AiQuestionProvider aiProvider)
                     {
@@ -342,6 +374,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
                             roundsPerTour,
                             players,
                             language,
+                            matureContent,
                             archivedQuestions,
                             CancellationToken.None);
                     }
@@ -353,6 +386,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
                             roundsPerTour,
                             players,
                             language,
+                            matureContent,
                             CancellationToken.None);
                     }
 

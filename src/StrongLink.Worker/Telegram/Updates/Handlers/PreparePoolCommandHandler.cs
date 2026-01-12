@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -101,6 +100,13 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
 
                     var provider = _factory.Resolve(session.QuestionSourceMode);
 
+                    // Notify chat that generation is starting for this tour
+                    var generatingMessage = session.Language == GameLanguage.Russian
+                        ? $"🤖 Генерирую вопросы для тура {tourIndex + 1}: \"{topic}\"..."
+                        : $"🤖 Generating questions for tour {tourIndex + 1}: \"{topic}\"...";
+
+                    await Client.SendTextMessageAsync(chatId, generatingMessage, cancellationToken: cancellationToken);
+
                     // Pass archived questions to AI provider to avoid repetition
                     IReadOnlyDictionary<int, List<Question>> generated;
                     if (provider is AiQuestionProvider aiProvider)
@@ -111,6 +117,7 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
                             session.RoundsPerTour,
                             session.Players,
                             session.Language,
+                            session.MatureContent,
                             archivedQuestions,
                             cancellationToken);
                     }
@@ -122,6 +129,7 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
                             session.RoundsPerTour,
                             session.Players,
                             session.Language,
+                            session.MatureContent,
                             cancellationToken);
                     }
 

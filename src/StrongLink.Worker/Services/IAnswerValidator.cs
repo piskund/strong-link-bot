@@ -11,6 +11,7 @@ public interface IAnswerValidator
     /// <param name="correctAnswer">The expected correct answer</param>
     /// <param name="question">The question being answered</param>
     /// <param name="language">The language of the question and answer</param>
+    /// <param name="difficultyLevel">The difficulty level affecting validation strictness</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if the answer is considered correct, false otherwise</returns>
     Task<bool> ValidateAnswerAsync(
@@ -18,5 +19,6 @@ public interface IAnswerValidator
         string correctAnswer,
         string question,
         GameLanguage language,
+        DifficultyLevel difficultyLevel,
         CancellationToken cancellationToken);
 }

@@ -1,5 +1,3 @@
-using System.Text.Json;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -83,6 +81,7 @@ public static class TestQuestionGeneration
                 roundsPerTour: 3,
                 players: new List<Player> { new Player { Id = 1, DisplayName = "TestPlayer", Status = PlayerStatus.Active } },
                 language: GameLanguage.English,
+                matureContent: true,
                 cancellationToken: CancellationToken.None
             );
 

@@ -4,6 +4,7 @@ using Moq;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Localization;
+using StrongLink.Worker.Persistence;
 using StrongLink.Worker.Services;
 using StrongLink.Worker.Telegram.Updates.Handlers;
 using Telegram.Bot;
@@ -18,6 +19,7 @@ public class JoinCommandHandlerTests
 {
     private readonly Mock<ITelegramBotClient> _client;
     private readonly Mock<IGameSessionRepository> _repository;
+    private readonly Mock<IQuestionPoolRepository> _poolRepository;
     private readonly ILocalizationService _localization;
     private readonly IOptions<BotOptions> _botOptions;
     private readonly IOptions<GameOptions> _gameOptions;
@@ -28,6 +30,7 @@ public class JoinCommandHandlerTests
     {
         _client = new Mock<ITelegramBotClient>();
         _repository = new Mock<IGameSessionRepository>();
+        _poolRepository = new Mock<IQuestionPoolRepository>();
         _localization = new LocalizationService();
         _sentMessages = new List<string>();
 
@@ -46,6 +49,10 @@ public class JoinCommandHandlerTests
             EliminateLowest = 1
         });
 
+        // Setup pool repository to return empty available topics (for tests to work without actual pool)
+        _poolRepository.Setup(p => p.GetAvailableTopicsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, int>());
+
         // Capture sent messages using the more flexible MakeRequestAsync
         _client.Setup(c => c.MakeRequestAsync(
                 It.IsAny<SendMessageRequest>(),
@@ -63,6 +70,7 @@ public class JoinCommandHandlerTests
             _client.Object,
             _localization,
             _repository.Object,
+            _poolRepository.Object,
             _botOptions,
             _gameOptions,
             NullLogger<JoinCommandHandler>.Instance);

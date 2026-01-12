@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -29,7 +28,7 @@ public class AiQuestionProviderTests
             new() { Id = 1, DisplayName = "Alice", Status = PlayerStatus.Active }
         };
 
-        var pool = await provider.PrepareQuestionPoolAsync(new[] { "Math" }, 1, 1, players, GameLanguage.English, CancellationToken.None);
+        var pool = await provider.PrepareQuestionPoolAsync(new[] { "Math" }, 1, 1, players, GameLanguage.English, true, CancellationToken.None);
 
         Assert.True(pool.ContainsKey(1));
         Assert.Single(pool[1]);

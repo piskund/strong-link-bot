@@ -1,5 +1,4 @@
 using System.Xml.Linq;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -31,6 +30,7 @@ public sealed class ChgkQuestionProvider : IQuestionProvider
         int roundsPerTour,
         IReadOnlyList<Player> players,
         GameLanguage language,
+        bool matureContent,
         CancellationToken cancellationToken)
     {
         if (language != GameLanguage.Russian)

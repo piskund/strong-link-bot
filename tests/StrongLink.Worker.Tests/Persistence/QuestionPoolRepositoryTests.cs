@@ -3,7 +3,6 @@ using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Persistence;
-using Xunit;
 
 namespace StrongLink.Worker.Tests.Persistence;
 

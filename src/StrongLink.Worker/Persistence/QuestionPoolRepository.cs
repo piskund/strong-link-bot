@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -10,11 +9,13 @@ public interface IQuestionPoolRepository
 {
     Task<List<Question>> GetUnusedQuestionsAsync(CancellationToken cancellationToken = default);
     Task<List<Question>> GetArchivedQuestionsAsync(CancellationToken cancellationToken = default);
+    Task<List<Question>> GetArchivedQuestionsByTopicAsync(string topic, int maxMonthsBack = 1, CancellationToken cancellationToken = default);
     Task AddToUnusedPoolAsync(IEnumerable<Question> questions, CancellationToken cancellationToken = default);
     Task MoveToArchiveAsync(IEnumerable<Question> questions, CancellationToken cancellationToken = default);
     Task<(int Unused, int Archived)> GetPoolStatsAsync(CancellationToken cancellationToken = default);
     Task ClearPoolAsync(bool clearArchive, CancellationToken cancellationToken = default);
     Task<List<Question>> SelectQuestionsAsync(string topic, int count, CancellationToken cancellationToken = default);
+    Task<Dictionary<string, int>> GetAvailableTopicsAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class QuestionPoolRepository : IQuestionPoolRepository
@@ -96,6 +97,66 @@ public sealed class QuestionPoolRepository : IQuestionPoolRepository
 
             _logger.LogDebug("Loaded {Count} archived questions from {FolderCount} month folders",
                 allQuestions.Count, monthFolders.Length);
+
+            return allQuestions;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task<List<Question>> GetArchivedQuestionsByTopicAsync(
+        string topic,
+        int maxMonthsBack = 1,
+        CancellationToken cancellationToken = default)
+    {
+        await _lock.WaitAsync(cancellationToken);
+        try
+        {
+            var sanitizedTopic = SanitizeTopicName(topic);
+            var allQuestions = new List<Question>();
+
+            if (!Directory.Exists(_archivedPath))
+            {
+                return allQuestions;
+            }
+
+            // Calculate the date range to search (go back X months from current month)
+            var currentMonth = DateTimeOffset.UtcNow;
+            var targetMonths = new List<string>();
+
+            for (int i = 0; i <= maxMonthsBack; i++)
+            {
+                var monthDate = currentMonth.AddMonths(-i);
+                targetMonths.Add(monthDate.ToString("yyyy-MM"));
+            }
+
+            _logger.LogDebug("Searching for archived questions for topic '{Topic}' in months: {Months}",
+                topic, string.Join(", ", targetMonths));
+
+            // Load questions from target months
+            foreach (var month in targetMonths)
+            {
+                var monthPath = Path.Combine(_archivedPath, month);
+                if (!Directory.Exists(monthPath))
+                {
+                    continue;
+                }
+
+                // Load the specific topic file
+                var topicFile = Path.Combine(monthPath, $"{sanitizedTopic}.json");
+                if (File.Exists(topicFile))
+                {
+                    var questions = await LoadQuestionsFromFileAsync(topicFile, cancellationToken);
+                    allQuestions.AddRange(questions);
+                    _logger.LogDebug("Loaded {Count} questions from {Month}/{Topic}",
+                        questions.Count, month, sanitizedTopic);
+                }
+            }
+
+            _logger.LogInformation("Loaded {Count} archived questions for topic '{Topic}' from last {Months} month(s)",
+                allQuestions.Count, topic, maxMonthsBack + 1);
 
             return allQuestions;
         }
@@ -354,6 +415,35 @@ public sealed class QuestionPoolRepository : IQuestionPoolRepository
             }
 
             return selected;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task<Dictionary<string, int>> GetAvailableTopicsAsync(CancellationToken cancellationToken = default)
+    {
+        await _lock.WaitAsync(cancellationToken);
+        try
+        {
+            var topicCounts = new Dictionary<string, int>();
+            var topicFiles = Directory.GetFiles(_unusedPath, "*.json");
+
+            foreach (var file in topicFiles)
+            {
+                var questions = await LoadQuestionsFromFileAsync(file, cancellationToken);
+                if (questions.Count > 0)
+                {
+                    var fileName = Path.GetFileNameWithoutExtension(file);
+                    // Use the actual topic from questions if available, otherwise use filename
+                    var topicName = questions.FirstOrDefault()?.Topic ?? fileName;
+                    topicCounts[topicName] = questions.Count;
+                }
+            }
+
+            _logger.LogDebug("Found {Count} topics with unused questions", topicCounts.Count);
+            return topicCounts;
         }
         finally
         {

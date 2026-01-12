@@ -34,3 +34,10 @@ public enum QuestionSourceMode
     Json
 }
 
+public enum DifficultyLevel
+{
+    Easy,
+    Medium,
+    Hard
+}
+

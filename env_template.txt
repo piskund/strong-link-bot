@@ -37,12 +37,69 @@ BOT__DEFAULTLANGUAGE=Russian
 BOT__QUESTIONSOURCE=AI
 
 # Game Configuration (optional)
-GAME__TOURS=8
+# Tours: Maximum number of tours as a safety limit (default: 999)
+# Games normally end when only 1 player remains through elimination,
+# not when the tour limit is reached. This is just a safety net.
+GAME__TOURS=999
 GAME__ROUNDSPERTOUR=10
 GAME__ANSWERTIMEOUTSECONDS=30
 GAME__ELIMINATELOWEST=1
+
+# Topics for tours - these are RECOMMENDATIONS, not strict requirements
+# AI can generate random topics if you have more tours than topics listed
+# Default topics if not specified: Эротика, Литература, Фильмы, Фантастика, Анекдоты
+#
+# Use comma-separated format (recommended):
+# GAME__TOPICS=Эротика,Литература,Фильмы,Фантастика,Анекдоты
+# GAME__TOPICS=History,Science,Art,Literature,Movies,Technology
+#
+# Alternative: use indexed format (less convenient):
+# GAME__TOPICS__0=Эротика
+# GAME__TOPICS__1=Литература
+# GAME__TOPICS__2=Фильмы
 
 # Use AI for answer validation (true/false)
 # When enabled, uses AI to check if answers are semantically correct
 # Handles minor spelling differences, word order variations, abbreviations, etc.
 GAME__USEAIANSWERVALIDATION=true
+
+# Game difficulty level (Easy/Medium/Hard)
+# Easy: Simple questions, lenient answer checking (accepts close answers)
+#       - Direct questions about well-known facts
+#       - Examples: "What is the capital of France?" → "Paris"
+#       - Tolerates spelling errors, synonyms, partial answers
+# Medium: Moderate questions, balanced answer checking
+#       - Mix of direct questions and logical reasoning
+#       - Examples: "This Russian poet died in a duel at age 37" → "Pushkin"
+#       - Requires basic erudition, accepts minor variations
+# Hard: Complex "What? Where? When?" style questions, strict validation
+#       - Riddles with metaphors and associations
+#       - Examples: "In ancient times valued as gold, now in every kitchen" → "Salt"
+#       - Must be figured out through logic, strict answer checking
+GAME__DIFFICULTYLEVEL=Easy
+
+# Enable mature content mode (18+) (true/false)
+# When enabled, allows broader topic selection including mature themes
+# in art, literature, history, mythology, etc.
+# OpenAI will still filter explicit sexual content per their usage policies
+GAME__MATURECONTENTENABLED=true
+
+# OpenAI Image Configuration
+# Percentage of questions that should include images (0-100)
+# Set to 0 to disable images, 100 for all questions with images
+OPENAI__IMAGEPERCENTAGE=30
+
+# Use DALL-E to generate images for questions (true/false)
+# When enabled, questions without images will have images generated via DALL-E API
+# Warning: This increases cost and latency significantly!
+# Recommended: Keep false and rely on AI using reliable image sources (Unsplash, etc.)
+OPENAI__USEDALLEIMAGEGENERATION=false
+
+# DALL-E model to use for image generation (only if USEDALLEIMAGEGENERATION=true)
+# Options: dall-e-3 (better quality), dall-e-2 (cheaper)
+OPENAI__DALLEMODEL=dall-e-3
+
+# DALL-E image size (only if USEDALLEIMAGEGENERATION=true)
+# dall-e-3 options: 1024x1024, 1792x1024, 1024x1792
+# dall-e-2 options: 256x256, 512x512, 1024x1024
+OPENAI__DALLEIMAGESIZE=1024x1024

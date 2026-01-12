@@ -12,6 +12,18 @@ public interface IQuestionProvider
         int roundsPerTour,
         IReadOnlyList<Player> players,
         GameLanguage language,
+        CancellationToken cancellationToken)
+    {
+        return PrepareQuestionPoolAsync(topics, tours, roundsPerTour, players, language, true, cancellationToken);
+    }
+
+    Task<IReadOnlyDictionary<int, List<Question>>> PrepareQuestionPoolAsync(
+        IReadOnlyList<string> topics,
+        int tours,
+        int roundsPerTour,
+        IReadOnlyList<Player> players,
+        GameLanguage language,
+        bool matureContent,
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<Question>> PrepareStandaloneQuestionsAsync(

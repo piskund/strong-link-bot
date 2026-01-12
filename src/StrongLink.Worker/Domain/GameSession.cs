@@ -10,6 +10,10 @@ public sealed class GameSession
 
     public QuestionSourceMode QuestionSourceMode { get; set; } = QuestionSourceMode.AI;
 
+    public DifficultyLevel DifficultyLevel { get; set; } = DifficultyLevel.Easy;
+
+    public bool MatureContent { get; set; } = true;
+
     public IReadOnlyList<string> Topics { get; init; } = Array.Empty<string>();
 
     public int Tours { get; init; }

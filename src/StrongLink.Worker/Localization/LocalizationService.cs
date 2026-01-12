@@ -39,10 +39,12 @@ public sealed class LocalizationService : ILocalizationService
                           "📋 Доступные команды:\n" +
                           "/join — присоединиться к игре\n" +
                           "/standings — посмотреть таблицу результатов\n" +
+                          "/schedule — расписание запланированных игр\n" +
                           "/help — показать эту справку",
         ["Bot.Help"] = "📋 Доступные команды:\n" +
                        "/join — присоединиться к игре\n" +
                        "/standings — посмотреть таблицу результатов\n" +
+                       "/schedule — расписание запланированных игр\n" +
                        "/help — показать эту справку",
         ["Bot.NotAdmin"] = "Эта команда доступна только администраторам игры.",
         ["Bot.GameAlreadyRunning"] = "Игра уже запущена в этом чате.",
@@ -55,8 +57,8 @@ public sealed class LocalizationService : ILocalizationService
         ["Bot.NoPlayers"] = "Никто не присоединился к игре. Используйте команду /join, чтобы участвовать.",
         ["Bot.ConfigUpdated"] = "Настройки игры обновлены.",
         ["Game.Start"] = "Игра Strong Link начинается! Тур {0}: {1}.",
-        ["Game.TourStart"] = "🎯 Тур {0} из {1}: {2}",
-        ["Game.Round"] = "Раунд {0}/{1}. Вопрос для {2}:\n{3}\n\n⏱️ У вас есть {4} секунд на ответ!",
+        ["Game.TourStart"] = "🎯 Тур {0}: {1}",
+        ["Game.Round"] = "🎯 Тур {0} — {1}\nРаунд {2}/{3}. Вопрос для {4}:\n{5}\n\n⏱️ У вас есть {6} секунд на ответ!",
         ["Game.Correct"] = "Верно!",
         ["Game.Incorrect"] = "Неверно. Правильный ответ: {0}.",
         ["Game.Timeout"] = "⏱️ Время вышло для {0}! Правильный ответ: {1}",
@@ -88,10 +90,12 @@ public sealed class LocalizationService : ILocalizationService
                           "📋 Available commands:\n" +
                           "/join — join the game\n" +
                           "/standings — view the leaderboard\n" +
+                          "/schedule — view scheduled games\n" +
                           "/help — show this help",
         ["Bot.Help"] = "📋 Available commands:\n" +
                        "/join — join the game\n" +
                        "/standings — view the leaderboard\n" +
+                       "/schedule — view scheduled games\n" +
                        "/help — show this help",
         ["Bot.NotAdmin"] = "This command is restricted to game administrators.",
         ["Bot.GameAlreadyRunning"] = "A game is already running in this chat.",
@@ -104,8 +108,8 @@ public sealed class LocalizationService : ILocalizationService
         ["Bot.NoPlayers"] = "No one has joined the game yet. Use /join to participate.",
         ["Bot.ConfigUpdated"] = "Game settings updated.",
         ["Game.Start"] = "Strong Link is starting! Tour {0}: {1}.",
-        ["Game.TourStart"] = "🎯 Tour {0} of {1}: {2}",
-        ["Game.Round"] = "Round {0}/{1}. Question for {2}:\n{3}\n\n⏱️ You have {4} seconds to answer!",
+        ["Game.TourStart"] = "🎯 Tour {0}: {1}",
+        ["Game.Round"] = "🎯 Tour {0} — {1}\nRound {2}/{3}. Question for {4}:\n{5}\n\n⏱️ You have {6} seconds to answer!",
         ["Game.Correct"] = "Correct!",
         ["Game.Incorrect"] = "Incorrect. The correct answer is {0}.",
         ["Game.Timeout"] = "⏱️ Time's up for {0}! The correct answer was: {1}",

@@ -1,7 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.QuestionProviders;
@@ -54,6 +52,7 @@ public sealed class AiTestRunner
             roundsPerTour,
             players,
             language,
+            true, // matureContent
             cancellationToken);
 
         // Flatten into an ordered list by tour

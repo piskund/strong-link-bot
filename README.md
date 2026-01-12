@@ -4,9 +4,10 @@ A Telegram quiz bot inspired by the classic “Weakest Link” format. Strong Li
 
 ## Features
 
-- **Structured Quiz Tournaments**: 8 configurable tours with 10 rounds each, per-spec scoring and elimination mechanics
+- **Structured Quiz Tournaments**: Configurable tours with 10 rounds each. Games naturally end through elimination mechanics when a winner emerges, with a safety limit to prevent infinite games
 - **Multi-language Play**: Russian (default) and English interfaces, with localized prompts and help
 - **Flexible Question Sources**: AI-generated trivia via OpenAI or curated packs fetched from the ЧГК (ChGK) database
+- **Rich Media Questions**: Configurable image support with reliable CDN sources (Unsplash, Wikimedia, Pixabay, Pexels) or optional DALL-E generation
 - **Persistent Game State**: JSON-backed storage for state recovery and exporting final results
 - **Telegram-native UX**: Command-driven controls, auto-messaging, and real-time scoreboard updates in group chats
 
@@ -55,10 +56,11 @@ OPENAI_API_KEY=your_openai_key_here # optional if using AI questions
     "QuestionSource": "AI"
   },
   "Game": {
-    "Tours": 8,
+    "Tours": 999,  // Safety limit - games normally end when 1 player remains
     "RoundsPerTour": 10,
     "AnswerTimeoutSeconds": 30,
-    "EliminateLowest": 1
+    "EliminateLowest": 1,
+    "Topics": ["Эротика", "Литература", "Фильмы", "Фантастика", "Анекдоты"]
   },
   "OpenAi": {
     "Model": "gpt-5.2",
@@ -171,6 +173,35 @@ This approach significantly reduces costs since:
 
 Using `gpt-4o-mini` for validation instead of `gpt-5.2` can reduce answer validation costs by ~10-20x while maintaining accuracy.
 
+## Image Configuration for AI Questions
+
+Strong Link supports rich media questions with images sourced from reliable CDN providers or generated via DALL-E:
+
+**Automatic Image Sourcing (Recommended)**
+When generating AI questions, the bot instructs the AI to use reliable image CDN sources:
+- Unsplash (`https://images.unsplash.com/...`)
+- Wikimedia Commons direct links (`https://upload.wikimedia.org/...`)
+- Pixabay (`https://pixabay.com/get/...`)
+- Pexels (`https://images.pexels.com/...`)
+
+Configure the percentage of questions with images using `OPENAI__IMAGEPERCENTAGE` in `.env` (0-100, default: 30).
+
+**DALL-E Image Generation (Optional)**
+For questions where the AI doesn't provide images, you can enable automatic image generation via DALL-E:
+
+```env
+OPENAI__USEDALLEIMAGEGENERATION=true
+OPENAI__DALLEMODEL=dall-e-3
+OPENAI__DALLEIMAGESIZE=1024x1024
+```
+
+⚠️ **Cost Warning:** DALL-E significantly increases both cost and latency:
+- `dall-e-3`: ~$0.04-0.08 per image (depending on size)
+- `dall-e-2`: ~$0.016-0.020 per image (cheaper, lower quality)
+- Generation time: 5-10 seconds per image
+
+**Recommendation:** Keep `OPENAI__USEDALLEIMAGEGENERATION=false` and let the AI use existing CDN images. Only enable DALL-E if you need custom-generated visuals for every question.
+
 ## Configuration Options
 
 | Section | Option | Description | Default |
@@ -179,13 +210,18 @@ Using `gpt-4o-mini` for validation instead of `gpt-5.2` can reduce answer valida
 | `Bot` | `AdminUsernames` | Array of authorized Telegram usernames | `[]` |
 | `Bot` | `DefaultLanguage` | `ru` or `en` | `ru` |
 | `Bot` | `QuestionSource` | `AI` or `Chgk` | `AI` |
-| `Game` | `Tours` | Total tours per tournament | `8` |
+| `Game` | `Tours` | Total tours per tournament | `6` |
 | `Game` | `RoundsPerTour` | Rounds (full player rotations) per tour | `10` |
 | `Game` | `EliminateLowest` | Players removed after each tour | `1` |
 | `Game` | `UseAiAnswerValidation` | Use AI for flexible answer checking | `true` |
-| `Game` | `Topics` | Optional custom topics per tour | Default set |
+| `Game` | `DifficultyLevel` | Game difficulty: `Easy` (simple questions, lenient answers), `Medium` (balanced), or `Hard` (complex riddles, strict validation) | `Easy` |
+| `Game` | `Topics` | Recommended topics for tours (Russian or English). AI can generate random topics if needed. In `appsettings.json` use JSON array: `["Topic1", "Topic2"]`. In environment variables use comma-separated: `GAME__TOPICS=Topic1,Topic2,Topic3` | `["Эротика", "Литература", "Фильмы", "Фантастика", "Анекдоты"]` |
 | `OpenAi` | `Model` | OpenAI model for question generation | `gpt-4o-mini` |
 | `OpenAi` | `AnswerValidationModel` | OpenAI model for answer validation (optional, uses `Model` if not set) | `gpt-4o-mini` |
+| `OpenAi` | `ImagePercentage` | Percentage of questions with images (0-100) | `30` |
+| `OpenAi` | `UseDallEImageGeneration` | Generate images via DALL-E for questions without images | `false` |
+| `OpenAi` | `DallEModel` | DALL-E model (`dall-e-3` or `dall-e-2`) | `dall-e-3` |
+| `OpenAi` | `DallEImageSize` | DALL-E image dimensions (e.g., `1024x1024`) | `1024x1024` |
 | `Chgk` | `RandomEndpoint` | Source endpoint for ЧГК questions | `https://db.chgk.info/xml/random` |
 
 ## Architecture

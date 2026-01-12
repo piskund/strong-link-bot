@@ -1,6 +1,3 @@
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StrongLink.Worker;
 using StrongLink.Worker.Configuration;
@@ -80,7 +77,17 @@ if (args.Contains("--standalone-ai-test", StringComparer.OrdinalIgnoreCase))
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddOptions<BotOptions>().Bind(builder.Configuration.GetSection("Bot"));
-builder.Services.AddOptions<GameOptions>().Bind(builder.Configuration.GetSection("Game"));
+builder.Services.AddOptions<GameOptions>()
+    .Bind(builder.Configuration.GetSection("Game"))
+    .PostConfigure(options =>
+    {
+        // Support comma-separated GAME__TOPICS environment variable as an alternative to indexed GAME__TOPICS__0, etc.
+        var topicsEnv = Environment.GetEnvironmentVariable("GAME__TOPICS");
+        if (!string.IsNullOrWhiteSpace(topicsEnv))
+        {
+            options.Topics = topicsEnv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+    });
 builder.Services.AddOptions<OpenAiOptions>().Bind(builder.Configuration.GetSection("OpenAi"));
 builder.Services.AddOptions<ChgkOptions>().Bind(builder.Configuration.GetSection("Chgk"));
 
@@ -91,6 +98,9 @@ builder.Services.AddSingleton<JsonGameSessionRepository>();
 builder.Services.AddSingleton<IGameSessionRepository>(sp => sp.GetRequiredService<JsonGameSessionRepository>());
 builder.Services.AddSingleton<IQuestionPoolRepository, QuestionPoolRepository>();
 builder.Services.AddSingleton<IGameResultRepository, JsonGameResultRepository>();
+builder.Services.AddSingleton<ISuddenDeathService, SuddenDeathService>();
+builder.Services.AddSingleton<RegularModeScoreHandler>();
+builder.Services.AddSingleton<SuddenDeathModeScoreHandler>();
 builder.Services.AddSingleton<IGameLifecycleService, GameLifecycleService>();
 builder.Services.AddSingleton<IBotLifetimeService, TelegramBotService>();
 builder.Services.AddSingleton<UpdateDispatcher>();
@@ -116,6 +126,7 @@ builder.Services.AddTransient<StopCommandHandler>();
 builder.Services.AddTransient<PoolStatusCommandHandler>();
 builder.Services.AddTransient<PoolClearCommandHandler>();
 builder.Services.AddTransient<ScheduleCommandHandler>();
+builder.Services.AddTransient<TestScheduledCommandHandler>();
 builder.Services.AddTransient<AnswerMessageHandler>();
 
 builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHandler[]
@@ -133,6 +144,7 @@ builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHand
     sp.GetRequiredService<PoolStatusCommandHandler>(),
     sp.GetRequiredService<PoolClearCommandHandler>(),
     sp.GetRequiredService<ScheduleCommandHandler>(),
+    sp.GetRequiredService<TestScheduledCommandHandler>(),
     sp.GetRequiredService<AnswerMessageHandler>()
 });
 

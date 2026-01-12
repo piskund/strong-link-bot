@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Extensions.Logging;
 using StrongLink.Worker.Domain;
 using StrongLink.Worker.Services;
 
@@ -23,6 +22,7 @@ public sealed class JsonQuestionProvider : IQuestionProvider
 		int roundsPerTour,
 		IReadOnlyList<Player> players,
 		GameLanguage language,
+		bool matureContent,
 		CancellationToken cancellationToken)
 	{
 		return Task.FromException<IReadOnlyDictionary<int, List<Question>>>(

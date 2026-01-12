@@ -1,5 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
@@ -38,6 +36,21 @@ public sealed class TelegramBotService : IBotLifetimeService
         if (_botOptions.Polling.UseWebhook)
         {
             _logger.LogWarning("Webhook mode configured but not implemented. Falling back to polling.");
+        }
+
+        // Drop pending updates if configured to prevent processing old/stale updates
+        if (_botOptions.Polling.DropPendingUpdates)
+        {
+            try
+            {
+                _logger.LogInformation("Dropping pending updates...");
+                await _client.DeleteWebhookAsync(dropPendingUpdates: true, cancellationToken: cancellationToken);
+                _logger.LogInformation("Pending updates cleared successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to drop pending updates, continuing anyway");
+            }
         }
 
         var receiverOptions = new ReceiverOptions
