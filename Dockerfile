@@ -40,9 +40,9 @@ ENV DOTNET_EnableDiagnostics=0
 # Copy published application from build stage
 COPY --from=build /app/publish .
 
-# Create data directory for game results and logs with proper permissions
-RUN mkdir -p /app/data/results /app/logs && \
-    chmod 755 /app/data /app/data/results /app/logs
+# Create data directories for game results, logs, and debug logs with proper permissions
+RUN mkdir -p /app/data/results /app/logs /app/debug-logs && \
+    chmod 755 /app/data /app/data/results /app/logs /app/debug-logs
 
 # Create non-root user for security
 RUN groupadd -r stronglink && useradd -r -g stronglink stronglink && \

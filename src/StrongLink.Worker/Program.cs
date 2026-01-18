@@ -82,30 +82,39 @@ var builder = Host.CreateApplicationBuilder(args);
 var debugMode = Environment.GetEnvironmentVariable("DEBUG_MODE")?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
 if (debugMode)
 {
-    Console.WriteLine("🐛 DEBUG MODE ENABLED - Detailed logs will be written to /app/debug-logs/");
+    try
+    {
+        Console.WriteLine("🐛 DEBUG MODE ENABLED - Detailed logs will be written to /app/debug-logs/");
 
-    // Add appsettings.Debug.json to configuration
-    builder.Configuration.AddJsonFile("appsettings.Debug.json", optional: true, reloadOnChange: true);
+        // Add appsettings.Debug.json to configuration
+        builder.Configuration.AddJsonFile("appsettings.Debug.json", optional: true, reloadOnChange: true);
 
-    // Configure Serilog
-    Log.Logger = new LoggerConfiguration()
-        .MinimumLevel.Debug()
-        .MinimumLevel.Override("Microsoft", LogEventLevel.Debug)
-        .MinimumLevel.Override("System", LogEventLevel.Information)
-        .Enrich.FromLogContext()
-        .WriteTo.Console(
-            outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
-        .WriteTo.File(
-            path: "/app/debug-logs/stronglink-debug-.log",
-            rollingInterval: RollingInterval.Day,
-            retainedFileCountLimit: 7,
-            outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}",
-            fileSizeLimitBytes: 104857600, // 100MB
-            rollOnFileSizeLimit: true)
-        .CreateLogger();
+        // Configure Serilog
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Debug()
+            .MinimumLevel.Override("Microsoft", LogEventLevel.Debug)
+            .MinimumLevel.Override("System", LogEventLevel.Information)
+            .Enrich.FromLogContext()
+            .WriteTo.Console(
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+            .WriteTo.File(
+                path: "/app/debug-logs/stronglink-debug-.log",
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 7,
+                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}",
+                fileSizeLimitBytes: 104857600, // 100MB
+                rollOnFileSizeLimit: true)
+            .CreateLogger();
 
-    builder.Services.AddSerilog(Log.Logger);
-    Console.WriteLine("✅ Serilog configured for debug logging");
+        builder.Services.AddSerilog(Log.Logger);
+        Console.WriteLine("✅ Serilog configured for debug logging");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"⚠️  WARNING: Failed to configure debug logging: {ex.Message}");
+        Console.WriteLine("⚠️  Continuing with normal logging...");
+        // Continue without Serilog - use default logging
+    }
 }
 else
 {
