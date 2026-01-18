@@ -2,7 +2,18 @@
 
 This guide explains how to containerize and run the StrongLink Bot using Docker.
 
-## Quick Start
+## Windows Users - Desktop Scripts (Easiest)
+
+If you're on Windows, use the convenient batch scripts instead of manual commands:
+
+1. **First time:** Double-click `setup.bat`
+2. **Daily use:** Pin `start-fresh.bat` to desktop and double-click it
+
+See [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md) for complete documentation on all scripts.
+
+---
+
+## Quick Start (Manual)
 
 1. **Copy the environment template:**
    ```bash

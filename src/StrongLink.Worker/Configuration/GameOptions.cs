@@ -25,10 +25,11 @@ public sealed class GameOptions
     public int TourPauseSeconds { get; init; } = 30;
 
     /// <summary>
-    /// Recommended topics for tours. These are suggestions for AI to use.
-    /// If there are fewer topics than tours, AI will generate random topics for remaining tours.
+    /// Recommended topics for tours (70% probability selection from this list, 30% AI generates new random topics).
+    /// Configure in .env file: GAME__TOPICS=Topic1,Topic2,Topic3
+    /// Default fallback if not configured elsewhere.
     /// </summary>
-    public string[] Topics { get; set; } = [ "Шахматы", "Литература", "Фильмы", "Фантастика", "История", "Наука", "Животные", "Растения", "Спорт", "Космос"];
+    public string[] Topics { get; set; } = [ "Шахматы", "Космос", "История", "Наука", "Литература", "Фильмы", "Фантастика", "Спорт" ];
 
     /// <summary>
     /// Enable AI-powered answer validation for more flexible matching.

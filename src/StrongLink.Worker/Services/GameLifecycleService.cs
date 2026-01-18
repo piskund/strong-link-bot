@@ -224,8 +224,17 @@ public sealed class GameLifecycleService : IGameLifecycleService
                     var remaining = session.ActivePlayers.ToList();
                     if (remaining.Count <= 1)
                     {
+                        _logger.LogInformation("Only {Count} active player(s) remaining after sudden death elimination. Completing game.", remaining.Count);
                         await CompleteGameAsync(session, cancellationToken);
                         return;
+                    }
+
+                    // Safety check: Ensure we don't have ties in sudden death scores among remaining players
+                    var remainingSuddenDeathScores = remaining.Select(p => p.SuddenDeathScore).Distinct().ToList();
+                    if (remaining.Count > 1 && remainingSuddenDeathScores.Count == 1 && remainingSuddenDeathScores.First() > 0)
+                    {
+                        _logger.LogWarning("After sudden death elimination, {Count} players remain with tied sudden death scores ({Score}). This should not happen!",
+                            remaining.Count, remainingSuddenDeathScores.First());
                     }
 
                     // Survivors move to the next tour
@@ -951,33 +960,43 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
         _logger.LogInformation("Preparing questions for tour {Tour} during pause", session.CurrentTour);
 
-        var topic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1) ?? $"Topic {session.CurrentTour}";
-
         // Calculate required questions based on active players
         var requiredPerTour = session.ActivePlayers.Count() * session.RoundsPerTour;
 
-        // Try to get questions from unused pool first
-        var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, cancellationToken);
-        _logger.LogDebug("Found {Count} unused questions in pool for tour {Tour} topic '{Topic}'",
-            questionsFromPool.Count, session.CurrentTour, topic);
+        // NEW STRATEGY: Check if there are ANY unused questions in the pool
+        var poolStats = await _poolRepository.GetPoolStatsAsync(cancellationToken);
+        _logger.LogInformation("Pool stats before tour {Tour}: {Unused} unused questions available",
+            session.CurrentTour, poolStats.Unused);
+
+        // Try to get questions from unused pool first (any topic)
+        var questionsFromPool = await _poolRepository.SelectQuestionsAsync(string.Empty, requiredPerTour, cancellationToken);
+        _logger.LogDebug("Found {Count} unused questions in pool for tour {Tour}",
+            questionsFromPool.Count, session.CurrentTour);
 
         if (questionsFromPool.Count >= requiredPerTour)
         {
-            // Enough questions in pool
-            session.QuestionsByTour[session.CurrentTour] = new Queue<Question>(
-                questionsFromPool.Take(requiredPerTour).Select(q => q with { Topic = topic })
-            );
+            // Enough questions in pool - use them
+            // The questions already have topics assigned, so we keep them as-is
+            session.QuestionsByTour[session.CurrentTour] = new Queue<Question>(questionsFromPool.Take(requiredPerTour));
             _logger.LogInformation("Using {Count} pooled questions for tour {Tour}", requiredPerTour, session.CurrentTour);
             await _repository.SaveAsync(session, cancellationToken);
             return;
         }
 
-        // Need to generate questions
-        _logger.LogInformation("Generating questions for tour {Tour} topic '{Topic}'", session.CurrentTour, topic);
+        // Not enough questions in pool - need to generate
+        // Select topic with 70% from Topics list, 30% random
+        var selectedTopic = AiQuestionProvider.SelectTopicWithProbability(session.Topics);
+        var isRandomTopic = string.IsNullOrEmpty(selectedTopic);
+        var topicDisplay = isRandomTopic
+            ? (session.Language == GameLanguage.Russian ? "случайная тема" : "random topic")
+            : selectedTopic;
+
+        _logger.LogInformation("Generating questions for tour {Tour}. Selected topic: '{Topic}' (random: {IsRandom})",
+            session.CurrentTour, topicDisplay, isRandomTopic);
 
         var generatingMessage = session.Language == GameLanguage.Russian
-            ? $"🔄 Подготавливаю вопросы для следующего тура: \"{topic}\"..."
-            : $"🔄 Preparing questions for next tour: \"{topic}\"...";
+            ? $"🔄 Подготавливаю вопросы для следующего тура: \"{topicDisplay}\"..."
+            : $"🔄 Preparing questions for next tour: \"{topicDisplay}\"...";
 
         await _messenger.SendAsync(session.ChatId, generatingMessage, cancellationToken);
 
@@ -990,10 +1009,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 ? ExtractAskedQuestions(askedObj)
                 : new List<Question>();
 
-            var poolArchivedQuestions = await _poolRepository.GetArchivedQuestionsByTopicAsync(
-                topic,
-                maxMonthsBack: 1,
-                cancellationToken);
+            var poolArchivedQuestions = await _poolRepository.GetArchivedQuestionsAsync(cancellationToken);
 
             var allArchivedQuestions = new List<Question>(sessionAskedQuestions);
             allArchivedQuestions.AddRange(poolArchivedQuestions);
@@ -1002,7 +1018,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
             if (provider is AiQuestionProvider aiProvider)
             {
                 generated = await aiProvider.PrepareQuestionPoolAsync(
-                    new[] { topic },
+                    new[] { selectedTopic },
                     1,
                     requiredPerTour,
                     session.Players,
@@ -1014,7 +1030,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
             else
             {
                 generated = await provider.PrepareQuestionPoolAsync(
-                    new[] { topic },
+                    new[] { selectedTopic },
                     1,
                     requiredPerTour,
                     session.Players,
@@ -1024,17 +1040,19 @@ public sealed class GameLifecycleService : IGameLifecycleService
             }
 
             var generatedList = generated.Values.FirstOrDefault() ?? new List<Question>();
-            _logger.LogInformation("Generated {Count} questions for tour {Tour}", generatedList.Count, session.CurrentTour);
+            _logger.LogInformation("Generated {Count} questions for tour {Tour} with topic '{Topic}'",
+                generatedList.Count, session.CurrentTour, topicDisplay);
 
             // Combine pool + generated questions
             var combined = new List<Question>(questionsFromPool);
             combined.AddRange(generatedList);
 
+            // Use the questions for this tour
             session.QuestionsByTour[session.CurrentTour] = new Queue<Question>(
-                combined.Take(requiredPerTour).Select(q => q with { Topic = topic })
+                combined.Take(requiredPerTour)
             );
 
-            // Store surplus generated questions in unused pool
+            // Store ALL surplus generated questions in unused pool for future tours
             if (generatedList.Count > requiredPerTour - questionsFromPool.Count)
             {
                 var surplus = generatedList.Skip(requiredPerTour - questionsFromPool.Count).ToList();
@@ -1114,14 +1132,35 @@ public sealed class GameLifecycleService : IGameLifecycleService
             }
         }
 
-        var winner = session.ActivePlayers.OrderByDescending(p => p.Score).FirstOrDefault();
-        if (winner != null)
+        // Determine winner - if coming from sudden death, use SuddenDeathScore as tiebreaker
+        var activePlayers = session.ActivePlayers.ToList();
+        Player? winner = null;
+
+        if (activePlayers.Count > 0)
         {
-            _logger.LogInformation("Game winner: {PlayerName} with score {Score}", winner.DisplayName, winner.Score);
+            // Check if we just exited sudden death (indicated by any player having a non-zero SuddenDeathScore)
+            var hasSuddenDeathScores = activePlayers.Any(p => p.SuddenDeathScore > 0);
+
+            if (hasSuddenDeathScores)
+            {
+                // Use sudden death score as primary, then main score as tiebreaker
+                winner = activePlayers
+                    .OrderByDescending(p => p.SuddenDeathScore)
+                    .ThenByDescending(p => p.Score)
+                    .FirstOrDefault();
+                _logger.LogInformation("Game winner (via sudden death): {PlayerName} with main score {Score}, sudden death score {SDScore}",
+                    winner?.DisplayName, winner?.Score, winner?.SuddenDeathScore);
+            }
+            else
+            {
+                // Normal winner determination by main score
+                winner = activePlayers.OrderByDescending(p => p.Score).FirstOrDefault();
+                _logger.LogInformation("Game winner: {PlayerName} with score {Score}", winner?.DisplayName, winner?.Score);
+            }
         }
         else
         {
-            _logger.LogWarning("Game completed with no winner");
+            _logger.LogWarning("Game completed with no active players");
         }
 
         // Create and archive game result

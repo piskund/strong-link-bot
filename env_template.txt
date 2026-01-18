@@ -45,18 +45,24 @@ GAME__ROUNDSPERTOUR=10
 GAME__ANSWERTIMEOUTSECONDS=30
 GAME__ELIMINATELOWEST=1
 
-# Topics for tours - these are RECOMMENDATIONS, not strict requirements
-# AI can generate random topics if you have more tours than topics listed
-# Default topics if not specified: Эротика, Литература, Фильмы, Фантастика, Анекдоты
+# Topics for tours - PRIMARY CONFIGURATION LOCATION
+# Configure topics here (not in appsettings.json)
 #
-# Use comma-separated format (recommended):
-# GAME__TOPICS=Эротика,Литература,Фильмы,Фантастика,Анекдоты
-# GAME__TOPICS=History,Science,Art,Literature,Movies,Technology
+# How it works:
+# - 70% probability: Bot selects random topic from this list
+# - 30% probability: AI generates completely new random topic
+# - Topics aren't tied to specific tour numbers (dynamic selection)
 #
-# Alternative: use indexed format (less convenient):
-# GAME__TOPICS__0=Эротика
-# GAME__TOPICS__1=Литература
-# GAME__TOPICS__2=Фильмы
+# Use comma-separated format:
+GAME__TOPICS=Шахматы,Космос,История,Наука,Литература,Фильмы,Фантастика,Спорт
+# Or customize with your own topics:
+# GAME__TOPICS=History,Science,Art,Literature,Movies,Technology,Sports,Music
+
+# Debug Mode (disabled by default)
+# Enables detailed debug logging to debug-logs/ directory
+# Useful for troubleshooting and analysis
+# Set to "true" to enable detailed logging
+# DEBUG_MODE=false
 
 # Use AI for answer validation (true/false)
 # When enabled, uses AI to check if answers are semantically correct

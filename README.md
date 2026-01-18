@@ -104,6 +104,23 @@ dotnet run --project src/StrongLink.Worker
 **Prerequisites:**
 - Docker Desktop, Rancher Desktop, or Docker Engine installed
 
+**Windows Users - Easy Desktop Scripts (Recommended):**
+
+1. **First time setup:**
+   ```bash
+   # Double-click setup.bat - it will guide you through configuration
+   ```
+
+2. **Daily use:**
+   ```bash
+   # Pin start-fresh.bat to your desktop and double-click it
+   # It always pulls latest code and rebuilds for a fresh start
+   ```
+
+See [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md) for all available scripts (start, stop, logs, update, etc.)
+
+**Manual Docker Commands (All Platforms):**
+
 **1. Build and run with Docker Compose (Recommended):**
 
 ```bash
@@ -272,7 +289,7 @@ OPENAI__DALLEIMAGESIZE=1024x1024
 | `Game` | `EliminateLowest` | Players removed after each tour | `1` |
 | `Game` | `UseAiAnswerValidation` | Use AI for flexible answer checking | `true` |
 | `Game` | `DifficultyLevel` | Game difficulty: `Easy` (simple questions, lenient answers), `Medium` (balanced), or `Hard` (complex riddles, strict validation) | `Easy` |
-| `Game` | `Topics` | Recommended topics for tours (Russian or English). AI can generate random topics if needed. In `appsettings.json` use JSON array: `["Topic1", "Topic2"]`. In environment variables use comma-separated: `GAME__TOPICS=Topic1,Topic2,Topic3` | `["Эротика", "Литература", "Фильмы", "Фантастика", "Анекдоты"]` |
+| `Game` | `Topics` | Topic pool for tours. **Configure ONLY in `.env` file** using comma-separated format: `GAME__TOPICS=Topic1,Topic2,Topic3`. Bot uses probability-based selection: 70% chance picks random topic from this list, 30% chance AI generates completely new topic. Topics aren't tied to specific tour numbers. | `["Шахматы", "Космос", "История", "Наука", "Литература", "Фильмы", "Фантастика", "Спорт"]` |
 | `OpenAi` | `Model` | OpenAI model for question generation | `gpt-4o-mini` |
 | `OpenAi` | `AnswerValidationModel` | OpenAI model for answer validation (optional, uses `Model` if not set) | `gpt-4o-mini` |
 | `OpenAi` | `ImagePercentage` | Percentage of questions with images (0-100) | `30` |
@@ -303,6 +320,24 @@ tests/
     ├── QuestionProviders/                  # AI provider parsing tests
     └── StrongLink.Worker.Tests.csproj      # xUnit test project
 ```
+
+## Debug Mode
+
+For detailed troubleshooting and analysis, enable debug mode to capture comprehensive logs:
+
+```bash
+# Windows: Double-click debug-enable.bat
+# Manual: Add to .env file
+DEBUG_MODE=true
+```
+
+Debug logs are saved to `debug-logs/` directory with detailed information about:
+- Player actions and game flow
+- Question generation details
+- Answer validation logic
+- Error details and stack traces
+
+See [DEBUG_MODE.md](DEBUG_MODE.md) for complete documentation.
 
 ## Troubleshooting
 

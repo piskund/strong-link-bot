@@ -1,0 +1,46 @@
+@echo off
+REM ============================================================================
+REM Strong Link Bot - Quick Start Script
+REM Starts the bot using existing image (fast start, no rebuild)
+REM ============================================================================
+
+echo.
+echo ================================
+echo   Strong Link Bot - Quick Start
+echo ================================
+echo.
+
+REM Navigate to the bot directory
+cd /d "%~dp0"
+
+REM Check if .env file exists
+if not exist ".env" (
+    echo [ERROR] .env file not found!
+    echo.
+    echo Please create .env file first:
+    echo   1. Copy .env.docker to .env
+    echo   2. Edit .env and add your BOT__TOKEN and OPENAI__APIKEY
+    echo.
+    pause
+    exit /b 1
+)
+
+echo Starting container...
+docker-compose up -d
+echo.
+
+echo Waiting for container to start...
+timeout /t 2 /nobreak >nul
+echo.
+
+echo ================================
+echo   Bot started successfully!
+echo ================================
+echo.
+docker-compose ps
+echo.
+echo To view logs: docker-compose logs -f
+echo To stop: docker-compose down
+echo.
+
+pause

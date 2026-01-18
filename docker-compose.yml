@@ -26,6 +26,8 @@ services:
       - ./data/results:/app/data/results
       # Persist logs (optional)
       - ./logs:/app/logs
+      # Debug logs (only used when DEBUG_MODE=true)
+      - ./debug-logs:/app/debug-logs
 
     # Resource limits (adjust as needed)
     deploy:

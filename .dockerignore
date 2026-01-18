@@ -44,6 +44,8 @@ coverage/
 *.log
 logs/
 **/logs/
+debug-logs/
+**/debug-logs/
 data/
 **/data/
 

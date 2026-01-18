@@ -130,10 +130,19 @@ public sealed class SuddenDeathService : ISuddenDeathService
 
         _logger.LogDebug("Checking sudden death progress after round. Participants: {Count}", participants.Count);
 
+        if (participants.Count == 0)
+        {
+            _logger.LogError("No participants found in sudden death check - this should not happen!");
+            return new SuddenDeathResolution { IsResolved = false };
+        }
+
         // Check if there's a clear separation in scores
         var suddenDeathScores = participants.Select(p => p.SuddenDeathScore).ToList();
         var minScore = suddenDeathScores.Min();
         var maxScore = suddenDeathScores.Max();
+
+        _logger.LogInformation("Sudden death score check: Min={Min}, Max={Max}, Participants={Participants}",
+            minScore, maxScore, string.Join(", ", participants.Select(p => $"{p.DisplayName}:{p.SuddenDeathScore}")));
 
         if (maxScore > minScore)
         {
@@ -144,6 +153,10 @@ public sealed class SuddenDeathService : ISuddenDeathService
             var toEliminate = participants.Where(p => p.SuddenDeathScore == minScore).ToList();
             var survivors = participants.Where(p => p.SuddenDeathScore > minScore).ToList();
 
+            _logger.LogInformation("To eliminate: {ToElim}, Survivors: {Survivors}",
+                string.Join(", ", toEliminate.Select(p => p.DisplayName)),
+                string.Join(", ", survivors.Select(p => p.DisplayName)));
+
             return new SuddenDeathResolution
             {
                 IsResolved = true,
@@ -153,7 +166,7 @@ public sealed class SuddenDeathService : ISuddenDeathService
         }
         else
         {
-            _logger.LogInformation("Ties still present in sudden death. Continuing.");
+            _logger.LogInformation("Ties still present in sudden death (all scores = {Score}). Continuing.", minScore);
             return new SuddenDeathResolution
             {
                 IsResolved = false,
@@ -165,25 +178,29 @@ public sealed class SuddenDeathService : ISuddenDeathService
 
     public void EnterSuddenDeath(GameSession session, List<Player> participants)
     {
-        _logger.LogInformation("Entering sudden death mode for {Count} participants", participants.Count);
+        _logger.LogInformation("Entering sudden death mode for {Count} participants: {Players}",
+            participants.Count,
+            string.Join(", ", participants.Select(p => $"{p.DisplayName}(Score:{p.Score})")));
 
         // Reset sudden death scores for participants
         foreach (var player in participants)
         {
             player.SuddenDeathScore = 0;
+            _logger.LogDebug("Reset sudden death score for {Player}", player.DisplayName);
         }
 
         session.Status = GameStatus.SuddenDeath;
 
         // Track which players are in sudden death
-        session.Metadata["SuddenDeathParticipants"] = participants.Select(p => p.Id).ToList();
+        var participantIds = participants.Select(p => p.Id).ToList();
+        session.Metadata["SuddenDeathParticipants"] = participantIds;
 
         // Initialize the sudden death start round tracker
         // This will be used to enforce the round limit
         session.Metadata["SuddenDeathStartRound"] = session.CurrentRound;
 
-        _logger.LogInformation("Sudden death initialized with participants: {Players}, starting at round {Round}",
-            string.Join(", ", participants.Select(p => p.DisplayName)), session.CurrentRound);
+        _logger.LogInformation("Sudden death initialized. Participant IDs: [{Ids}], Starting round: {Round}",
+            string.Join(", ", participantIds), session.CurrentRound);
     }
 
     public void ExitSuddenDeath(GameSession session)

@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Options;
+using Serilog;
+using Serilog.Events;
 using StrongLink.Worker;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
@@ -75,6 +77,40 @@ if (args.Contains("--standalone-ai-test", StringComparer.OrdinalIgnoreCase))
 }
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// Configure Serilog for debug mode
+var debugMode = Environment.GetEnvironmentVariable("DEBUG_MODE")?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
+if (debugMode)
+{
+    Console.WriteLine("🐛 DEBUG MODE ENABLED - Detailed logs will be written to /app/debug-logs/");
+
+    // Add appsettings.Debug.json to configuration
+    builder.Configuration.AddJsonFile("appsettings.Debug.json", optional: true, reloadOnChange: true);
+
+    // Configure Serilog
+    Log.Logger = new LoggerConfiguration()
+        .MinimumLevel.Debug()
+        .MinimumLevel.Override("Microsoft", LogEventLevel.Debug)
+        .MinimumLevel.Override("System", LogEventLevel.Information)
+        .Enrich.FromLogContext()
+        .WriteTo.Console(
+            outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+        .WriteTo.File(
+            path: "/app/debug-logs/stronglink-debug-.log",
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 7,
+            outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}",
+            fileSizeLimitBytes: 104857600, // 100MB
+            rollOnFileSizeLimit: true)
+        .CreateLogger();
+
+    builder.Services.AddSerilog(Log.Logger);
+    Console.WriteLine("✅ Serilog configured for debug logging");
+}
+else
+{
+    Console.WriteLine("ℹ️  Debug mode disabled (set DEBUG_MODE=true to enable)");
+}
 
 builder.Services.AddOptions<BotOptions>().Bind(builder.Configuration.GetSection("Bot"));
 builder.Services.AddOptions<GameOptions>()
