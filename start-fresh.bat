@@ -33,15 +33,24 @@ echo [2/5] Pulling latest code from git...
 git pull
 echo.
 
-echo [3/5] Building fresh Docker image...
+echo [3/6] Creating data directories...
+if not exist "data\pool" mkdir "data\pool"
+if not exist "data\state" mkdir "data\state"
+if not exist "data\results" mkdir "data\results"
+if not exist "logs" mkdir "logs"
+if not exist "debug-logs" mkdir "debug-logs"
+echo Data directories created.
+echo.
+
+echo [4/6] Building fresh Docker image...
 docker-compose build --no-cache
 echo.
 
-echo [4/5] Starting container...
+echo [5/6] Starting container...
 docker-compose up -d
 echo.
 
-echo [5/5] Waiting for container to start...
+echo [6/6] Waiting for container to start...
 timeout /t 3 /nobreak >nul
 echo.
 

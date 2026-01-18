@@ -36,11 +36,20 @@ echo [2/6] Cleaning Docker build cache...
 docker system prune -f
 echo.
 
-echo [3/6] Removing old images...
+echo [3/7] Removing old images...
 docker-compose down --rmi local
 echo.
 
-echo [4/6] Building fresh image (this may take 2-3 minutes)...
+echo [4/7] Creating data directories...
+if not exist "data\pool" mkdir "data\pool"
+if not exist "data\state" mkdir "data\state"
+if not exist "data\results" mkdir "data\results"
+if not exist "logs" mkdir "logs"
+if not exist "debug-logs" mkdir "debug-logs"
+echo Data directories created.
+echo.
+
+echo [5/7] Building fresh image (this may take 2-3 minutes)...
 docker-compose build --no-cache --progress=plain
 if errorlevel 1 (
     echo.
@@ -51,11 +60,11 @@ if errorlevel 1 (
 )
 echo.
 
-echo [5/6] Starting container...
+echo [6/7] Starting container...
 docker-compose up -d
 echo.
 
-echo [6/6] Waiting 5 seconds for startup...
+echo [7/7] Waiting 5 seconds for startup...
 timeout /t 5 /nobreak >nul
 echo.
 

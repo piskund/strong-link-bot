@@ -15,6 +15,7 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
     private readonly ILogger<PreparePoolCommandHandler> _logger;
     private readonly QuestionProviderFactory _factory;
     private readonly IQuestionPoolRepository _poolRepository;
+    private readonly GameOptions _gameOptions;
 
     public PreparePoolCommandHandler(
         ITelegramBotClient client,
@@ -23,12 +24,14 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
         QuestionProviderFactory factory,
         IQuestionPoolRepository poolRepository,
         ILogger<PreparePoolCommandHandler> logger,
-        IOptions<BotOptions> botOptions)
+        IOptions<BotOptions> botOptions,
+        IOptions<GameOptions> gameOptions)
         : base(client, localization, repository, botOptions.Value)
     {
         _factory = factory;
         _poolRepository = poolRepository;
         _logger = logger;
+        _gameOptions = gameOptions.Value;
     }
 
     public override string Command => "/prepare_pool";
@@ -91,15 +94,19 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
             var preparing = Localization.GetString(session.Language, "Bot.PoolPreparing");
             await Client.SendTextMessageAsync(chatId, preparing, cancellationToken: cancellationToken);
 
-            // Select topic with 70% from Topics list, 30% random
-            var selectedTopic = AiQuestionProvider.SelectTopicWithProbability(session.Topics);
+            // Select topic with configured probability from Topics list vs random AI-generated
+            var selectedTopic = AiQuestionProvider.SelectTopicWithProbability(
+                session.Topics,
+                _gameOptions.TopicSelectionProbability);
             var isRandomTopic = string.IsNullOrEmpty(selectedTopic);
             var topicDisplay = isRandomTopic
                 ? (session.Language == GameLanguage.Russian ? "случайная тема" : "random topic")
                 : selectedTopic;
 
-            _logger.LogInformation("Selected topic for generation: '{Topic}' (random: {IsRandom})",
-                topicDisplay, isRandomTopic);
+            var probabilityPercent = (int)(_gameOptions.TopicSelectionProbability * 100);
+            _logger.LogInformation(
+                "Selected topic for generation: '{Topic}' (random: {IsRandom}, probability: {Probability}% from list)",
+                topicDisplay, isRandomTopic, probabilityPercent);
 
             var generatingMessage = session.Language == GameLanguage.Russian
                 ? $"🤖 Генерирую вопросы для 1 тура: \"{topicDisplay}\"..."

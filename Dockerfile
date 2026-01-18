@@ -12,10 +12,9 @@ WORKDIR /src
 # Copy solution and project files first for better Docker layer caching
 COPY StrongLink.sln ./
 COPY src/StrongLink.Worker/StrongLink.Worker.csproj ./src/StrongLink.Worker/
-COPY tests/StrongLink.Worker.Tests/StrongLink.Worker.Tests.csproj ./tests/StrongLink.Worker.Tests/
 
-# Restore dependencies
-RUN dotnet restore
+# Restore dependencies (only for the main project, not tests)
+RUN dotnet restore src/StrongLink.Worker/StrongLink.Worker.csproj
 
 # Copy the rest of the source code
 COPY . .
@@ -44,11 +43,8 @@ COPY --from=build /app/publish .
 RUN mkdir -p /app/data/results /app/logs /app/debug-logs && \
     chmod 755 /app/data /app/data/results /app/logs /app/debug-logs
 
-# Create non-root user for security
-RUN groupadd -r stronglink && useradd -r -g stronglink stronglink && \
-    chown -R stronglink:stronglink /app
-
-USER stronglink
+# Note: Running as root for simplicity with volume mounts
+# This is acceptable for a personal bot with local usage
 
 # Health check for monitoring
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

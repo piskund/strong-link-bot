@@ -25,11 +25,19 @@ public sealed class GameOptions
     public int TourPauseSeconds { get; init; } = 30;
 
     /// <summary>
-    /// Recommended topics for tours (70% probability selection from this list, 30% AI generates new random topics).
+    /// Recommended topics for tours.
     /// Configure in .env file: GAME__TOPICS=Topic1,Topic2,Topic3
     /// Default fallback if not configured elsewhere.
     /// </summary>
     public string[] Topics { get; set; } = [ "Шахматы", "Космос", "История", "Наука", "Литература", "Фильмы", "Фантастика", "Спорт" ];
+
+    /// <summary>
+    /// Probability (0.0 to 1.0) of selecting a topic from the Topics list during question generation.
+    /// Remaining probability means AI generates a completely random/new topic.
+    /// Examples: 0.5 = 50% from list / 50% random, 0.7 = 70% from list / 30% random
+    /// Configure in .env file: GAME__TOPICSELECTIONPROBABILITY=0.5
+    /// </summary>
+    public double TopicSelectionProbability { get; init; } = 0.5;
 
     /// <summary>
     /// Enable AI-powered answer validation for more flexible matching.

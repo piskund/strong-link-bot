@@ -63,3 +63,4 @@ nunit-*.xml
 !.env.example
 
 .claude/
+/nul

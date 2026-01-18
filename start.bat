@@ -25,6 +25,14 @@ if not exist ".env" (
     exit /b 1
 )
 
+echo Creating data directories if needed...
+if not exist "data\pool" mkdir "data\pool"
+if not exist "data\state" mkdir "data\state"
+if not exist "data\results" mkdir "data\results"
+if not exist "logs" mkdir "logs"
+if not exist "debug-logs" mkdir "debug-logs"
+echo.
+
 echo Starting container...
 docker-compose up -d
 echo.

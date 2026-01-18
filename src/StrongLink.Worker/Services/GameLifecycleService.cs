@@ -984,15 +984,19 @@ public sealed class GameLifecycleService : IGameLifecycleService
         }
 
         // Not enough questions in pool - need to generate
-        // Select topic with 70% from Topics list, 30% random
-        var selectedTopic = AiQuestionProvider.SelectTopicWithProbability(session.Topics);
+        // Select topic with configured probability from Topics list vs random AI-generated
+        var selectedTopic = AiQuestionProvider.SelectTopicWithProbability(
+            session.Topics,
+            _gameOptions.TopicSelectionProbability);
         var isRandomTopic = string.IsNullOrEmpty(selectedTopic);
         var topicDisplay = isRandomTopic
             ? (session.Language == GameLanguage.Russian ? "случайная тема" : "random topic")
             : selectedTopic;
 
-        _logger.LogInformation("Generating questions for tour {Tour}. Selected topic: '{Topic}' (random: {IsRandom})",
-            session.CurrentTour, topicDisplay, isRandomTopic);
+        var probabilityPercent = (int)(_gameOptions.TopicSelectionProbability * 100);
+        _logger.LogInformation(
+            "Generating questions for tour {Tour}. Selected topic: '{Topic}' (random: {IsRandom}, probability: {Probability}% from list)",
+            session.CurrentTour, topicDisplay, isRandomTopic, probabilityPercent);
 
         var generatingMessage = session.Language == GameLanguage.Russian
             ? $"🔄 Подготавливаю вопросы для следующего тура: \"{topicDisplay}\"..."

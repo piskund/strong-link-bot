@@ -49,14 +49,23 @@ GAME__ELIMINATELOWEST=1
 # Configure topics here (not in appsettings.json)
 #
 # How it works:
-# - 70% probability: Bot selects random topic from this list
-# - 30% probability: AI generates completely new random topic
-# - Topics aren't tied to specific tour numbers (dynamic selection)
+# - Bot selects topics dynamically using TopicSelectionProbability
+# - Topics aren't tied to specific tour numbers (random selection each time)
 #
 # Use comma-separated format:
 GAME__TOPICS=Шахматы,Космос,История,Наука,Литература,Фильмы,Фантастика,Спорт
 # Or customize with your own topics:
 # GAME__TOPICS=History,Science,Art,Literature,Movies,Technology,Sports,Music
+
+# Topic Selection Probability (0.0 to 1.0)
+# Controls how often bot selects from Topics list vs AI generates random topic
+# Examples:
+#   0.5 = 50% from Topics list / 50% AI random (default, balanced)
+#   0.7 = 70% from Topics list / 30% AI random (more predictable)
+#   1.0 = Always from Topics list / 0% AI random (fully predictable)
+#   0.0 = Never from Topics list / 100% AI random (fully creative)
+# Set higher for more predictable topics, lower for more variety
+GAME__TOPICSELECTIONPROBABILITY=0.5
 
 # Debug Mode (disabled by default)
 # Enables detailed debug logging to debug-logs/ directory
