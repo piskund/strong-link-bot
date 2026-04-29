@@ -841,22 +841,21 @@ public sealed class GameLifecycleService : IGameLifecycleService
             var topic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1) ?? $"Topic {session.CurrentTour}";
             var questionsNeeded = Math.Max(targetBuffer - questions.Count, targetBuffer);
 
-            // PRIORITY 1: Try to get questions from unused pool (any topic)
-            _logger.LogInformation("Attempting to get {Count} questions from unused pool before generating via API", questionsNeeded);
-            var questionsFromPool = await _poolRepository.SelectQuestionsAsync(string.Empty, questionsNeeded, cancellationToken);
+            // PRIORITY 1: Try to get topic-specific questions from unused pool
+            _logger.LogInformation("Attempting to get {Count} topic-specific questions from pool for '{Topic}'", questionsNeeded, topic);
+            var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, questionsNeeded, cancellationToken);
 
             if (questionsFromPool.Count > 0)
             {
-                _logger.LogInformation("Found {Count} unused questions in pool. Adding to queue.", questionsFromPool.Count);
+                _logger.LogInformation("Found {Count} topic-specific questions in pool. Adding to queue.", questionsFromPool.Count);
 
                 foreach (var question in questionsFromPool)
                 {
-                    questions.Enqueue(question with { Topic = topic });
+                    questions.Enqueue(question);
                 }
 
                 await _repository.SaveAsync(session, cancellationToken);
 
-                // If we got enough questions from pool, we're done
                 if (questions.Count >= threshold)
                 {
                     var statusMessage = session.Language == GameLanguage.Russian
@@ -867,12 +866,11 @@ public sealed class GameLifecycleService : IGameLifecycleService
                     return;
                 }
 
-                // Still need more, continue to generation
                 questionsNeeded = Math.Max(targetBuffer - questions.Count, targetBuffer);
                 _logger.LogInformation("Still need {Count} more questions. Generating via API...", questionsNeeded);
             }
 
-            // PRIORITY 2: Generate via API if pool doesn't have enough
+            // PRIORITY 2: Generate via API
             var provider = _questionProviderFactory.Resolve(session.QuestionSourceMode);
             _logger.LogInformation("Generating {Count} new questions for topic '{Topic}'", questionsNeeded, topic);
 

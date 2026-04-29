@@ -192,23 +192,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
             {
                 var topic = session.Topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
 
-                // PRIORITY 1: Try to get questions from pool for this specific topic
                 var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, cancellationToken);
-
-                // PRIORITY 2: If not enough topic-specific questions, get ANY unused questions from pool
-                if (questionsFromPool.Count < requiredPerTour)
-                {
-                    var additionalNeeded = requiredPerTour - questionsFromPool.Count;
-                    _logger.LogInformation("Only {Available} topic-specific questions for '{Topic}'. Trying to get {Additional} more from general pool...",
-                        questionsFromPool.Count, topic, additionalNeeded);
-
-                    var anyPoolQuestions = await _poolRepository.SelectQuestionsAsync(string.Empty, additionalNeeded, cancellationToken);
-                    if (anyPoolQuestions.Count > 0)
-                    {
-                        questionsFromPool.AddRange(anyPoolQuestions);
-                        _logger.LogInformation("Added {Count} questions from general unused pool (any topic)", anyPoolQuestions.Count);
-                    }
-                }
 
                 if (questionsFromPool.Count >= requiredPerTour)
                 {
@@ -379,23 +363,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 _logger.LogInformation("Background: Preparing tour {Tour}/{Total} - topic {Topic}",
                     tourIndex + 1, totalTours, topic);
 
-                // PRIORITY 1: Try topic-specific questions
                 var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, CancellationToken.None);
-
-                // PRIORITY 2: If not enough, get ANY unused questions from pool
-                if (questionsFromPool.Count < requiredPerTour)
-                {
-                    var additionalNeeded = requiredPerTour - questionsFromPool.Count;
-                    _logger.LogInformation("Background: Only {Available} topic-specific questions. Getting {Additional} more from general pool...",
-                        questionsFromPool.Count, additionalNeeded);
-
-                    var anyPoolQuestions = await _poolRepository.SelectQuestionsAsync(string.Empty, additionalNeeded, CancellationToken.None);
-                    if (anyPoolQuestions.Count > 0)
-                    {
-                        questionsFromPool.AddRange(anyPoolQuestions);
-                        _logger.LogInformation("Background: Added {Count} questions from general pool", anyPoolQuestions.Count);
-                    }
-                }
 
                 List<Question> tourQuestions;
                 if (questionsFromPool.Count >= requiredPerTour)
@@ -414,20 +382,6 @@ public sealed class StartCommandHandler : CommandHandlerBase
                         requiredPerTour - questionsFromPool.Count, tourIndex + 1);
 
                     var provider = _factory.Resolve(questionSourceMode);
-
-                    // Notify chat that background generation is starting for this tour
-                    var generatingMessage = language == GameLanguage.Russian
-                        ? $"🤖 Генерирую вопросы для тура {tourIndex + 1}: \"{topic}\"..."
-                        : $"🤖 Generating questions for tour {tourIndex + 1}: \"{topic}\"...";
-
-                    try
-                    {
-                        await Client.SendTextMessageAsync(chatId, generatingMessage, cancellationToken: CancellationToken.None);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to send generation notification to chat {ChatId}", chatId);
-                    }
 
                     IReadOnlyDictionary<int, List<Question>> generated;
                     if (provider is AiQuestionProvider aiProvider)
