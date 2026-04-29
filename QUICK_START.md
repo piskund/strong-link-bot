@@ -42,10 +42,7 @@ The `start-fresh.bat` script will:
 ### Step 1: Configure
 
 ```bash
-# Copy environment template
-cp .env.docker .env
-
-# Edit .env and add your tokens
+# Create .env and add your tokens
 notepad .env  # Windows
 nano .env     # Linux/Mac
 ```

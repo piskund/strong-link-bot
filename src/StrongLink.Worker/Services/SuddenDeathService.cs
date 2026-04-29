@@ -207,17 +207,14 @@ public sealed class SuddenDeathService : ISuddenDeathService
     {
         _logger.LogInformation("Exiting sudden death mode");
 
-        // Clear sudden death state for ALL players (including survivors)
-        foreach (var player in session.Players)
-        {
-            player.SuddenDeathScore = 0;
-        }
-
+        // DO NOT reset SuddenDeathScore - we need these scores to determine the final winner!
+        // Only clear the metadata and status tracking
         session.Metadata.Remove("SuddenDeathParticipants");
         session.Metadata.Remove("SuddenDeathStartRound");
         session.Status = GameStatus.InProgress;
         session.TurnQueue.Clear();
 
-        _logger.LogInformation("Sudden death state cleared");
+        _logger.LogInformation("Sudden death state cleared. Scores preserved for winner determination: {Scores}",
+            string.Join(", ", session.Players.Select(p => $"{p.DisplayName}:{p.SuddenDeathScore}")));
     }
 }

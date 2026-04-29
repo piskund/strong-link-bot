@@ -15,12 +15,7 @@ See [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md) for complete documentation on all scrip
 
 ## Quick Start (Manual)
 
-1. **Copy the environment template:**
-   ```bash
-   cp .env.docker .env
-   ```
-
-2. **Edit `.env` and add your credentials:**
+1. **Create `.env` file with your credentials:**
    ```bash
    TELEGRAM_BOT_TOKEN=your_actual_bot_token
    OPENAI_API_KEY=your_actual_openai_key
@@ -41,7 +36,7 @@ See [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md) for complete documentation on all scrip
 - **Dockerfile** - Multi-stage build for .NET 9.0 application
 - **docker-compose.yml** - Docker Compose configuration with volumes and resource limits
 - **.dockerignore** - Excludes unnecessary files from the Docker build context
-- **.env.docker** - Template for environment variables (copy to `.env` and customize)
+- **.env** - Environment variables with your configuration (required)
 
 ## Building the Docker Image
 
@@ -121,7 +116,7 @@ OPENAI__ANSWERVALIDATIONMODEL=gpt-4o-mini
 OPENAI__IMAGEPERCENTAGE=30
 ```
 
-See `.env.docker` for a complete list of available options.
+See `.env` for a complete list of available configuration options.
 
 ### Volume Mounts
 

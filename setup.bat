@@ -26,16 +26,16 @@ if exist ".env" (
     )
 )
 
-REM Copy template
-echo [1/4] Creating .env file from template...
-if exist ".env.docker" (
-    copy .env.docker .env >nul
-    echo [OK] .env file created
-) else (
-    echo [ERROR] .env.docker template not found!
+REM Check for .env existence
+echo [1/4] Checking .env file...
+if not exist ".env" (
+    echo [ERROR] .env file not found!
+    echo Please create .env file with your configuration.
+    echo See documentation for required settings.
     pause
     exit /b 1
 )
+echo [OK] .env file found
 echo.
 
 echo [2/4] Configuration

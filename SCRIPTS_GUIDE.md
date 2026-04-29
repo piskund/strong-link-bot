@@ -43,7 +43,7 @@ Now you have a desktop icon to start the bot with one click!
 ### setup.bat - First Time Setup
 
 **What it does:**
-- Creates `.env` file from `.env.docker` template
+- Checks if `.env` file exists
 - Opens `.env` in Notepad for editing
 - Checks if Docker is installed
 - Offers to build and start the bot
@@ -546,8 +546,8 @@ Use Windows Task Scheduler:
 
 **Solution:**
 1. Run `setup.bat` first
-2. Or manually: copy `.env.docker` to `.env`
-3. Edit `.env` with your tokens
+2. Or manually: create `.env` with required configuration
+3. Required: `BOT__TOKEN` and `OPENAI__APIKEY`
 
 ### "Container exits immediately"
 

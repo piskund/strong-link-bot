@@ -100,7 +100,7 @@ docker-compose restart
 - `DEBUG_MODE_SUMMARY.md` - This file (quick reference)
 - Updated `README.md` - Added debug mode section
 - Updated `SCRIPTS_GUIDE.md` - Added debug scripts documentation
-- Updated `.env.docker` - Added DEBUG_MODE configuration
+- Added DEBUG_MODE configuration to `.env`
 - Updated `env_template.txt` - Added DEBUG_MODE option
 
 ### Docker Configuration

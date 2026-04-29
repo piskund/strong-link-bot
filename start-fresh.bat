@@ -17,9 +17,8 @@ REM Check if .env file exists
 if not exist ".env" (
     echo [ERROR] .env file not found!
     echo.
-    echo Please create .env file first:
-    echo   1. Copy .env.docker to .env
-    echo   2. Edit .env and add your BOT__TOKEN and OPENAI__APIKEY
+    echo Please create .env file first with your configuration.
+    echo Required settings: BOT__TOKEN and OPENAI__APIKEY
     echo.
     pause
     exit /b 1

@@ -817,17 +817,48 @@ public sealed class GameLifecycleService : IGameLifecycleService
             return;
         }
 
-        _logger.LogInformation("Running low on questions for tour {Tour} (current: {Count}, threshold: {Threshold}). Generating more...",
+        _logger.LogInformation("Running low on questions for tour {Tour} (current: {Count}, threshold: {Threshold}). Checking pool first...",
             session.CurrentTour, questions.Count, threshold);
 
         try
         {
             var topic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1) ?? $"Topic {session.CurrentTour}";
-            var provider = _questionProviderFactory.Resolve(session.QuestionSourceMode);
+            var questionsNeeded = Math.Max(targetBuffer - questions.Count, targetBuffer);
 
-            // Calculate how many questions to generate
-            var questionsToGenerate = Math.Max(targetBuffer - questions.Count, targetBuffer);
-            _logger.LogInformation("Generating {Count} new questions for topic '{Topic}'", questionsToGenerate, topic);
+            // PRIORITY 1: Try to get questions from unused pool (any topic)
+            _logger.LogInformation("Attempting to get {Count} questions from unused pool before generating via API", questionsNeeded);
+            var questionsFromPool = await _poolRepository.SelectQuestionsAsync(string.Empty, questionsNeeded, cancellationToken);
+
+            if (questionsFromPool.Count > 0)
+            {
+                _logger.LogInformation("Found {Count} unused questions in pool. Adding to queue.", questionsFromPool.Count);
+
+                foreach (var question in questionsFromPool)
+                {
+                    questions.Enqueue(question with { Topic = topic });
+                }
+
+                await _repository.SaveAsync(session, cancellationToken);
+
+                // If we got enough questions from pool, we're done
+                if (questions.Count >= threshold)
+                {
+                    var statusMessage = session.Language == GameLanguage.Russian
+                        ? $"🔄 Добавлено {questionsFromPool.Count} вопросов из пула"
+                        : $"🔄 Added {questionsFromPool.Count} questions from pool";
+
+                    await _messenger.SendAsync(session.ChatId, statusMessage, cancellationToken);
+                    return;
+                }
+
+                // Still need more, continue to generation
+                questionsNeeded = Math.Max(targetBuffer - questions.Count, targetBuffer);
+                _logger.LogInformation("Still need {Count} more questions. Generating via API...", questionsNeeded);
+            }
+
+            // PRIORITY 2: Generate via API if pool doesn't have enough
+            var provider = _questionProviderFactory.Resolve(session.QuestionSourceMode);
+            _logger.LogInformation("Generating {Count} new questions for topic '{Topic}'", questionsNeeded, topic);
 
             // Get archived questions from both session and pool repository to avoid repetition
             var sessionAskedQuestions = session.Metadata.TryGetValue("AskedQuestions", out var askedObj)
@@ -855,14 +886,14 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
             await _messenger.SendAsync(session.ChatId, generatingMessage, cancellationToken);
 
-            // Generate questions
+            // Generate questions via API
             IReadOnlyDictionary<int, List<Question>> generated;
             if (provider is AiQuestionProvider aiProvider)
             {
                 generated = await aiProvider.PrepareQuestionPoolAsync(
                     new[] { topic },
                     1,
-                    questionsToGenerate,
+                    questionsNeeded,
                     session.Players,
                     session.Language,
                     session.MatureContent,
@@ -874,7 +905,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 generated = await provider.PrepareQuestionPoolAsync(
                     new[] { topic },
                     1,
-                    questionsToGenerate,
+                    questionsNeeded,
                     session.Players,
                     session.Language,
                     session.MatureContent,
@@ -885,10 +916,10 @@ public sealed class GameLifecycleService : IGameLifecycleService
             _logger.LogInformation("Generated {Count} new questions. Adding to current tour queue.", generatedList.Count);
 
             // Get existing question texts to avoid duplicates
-            // Include: (1) questions in queue, (2) already asked questions in this session, (3) archived questions
+            // Include: (1) questions in queue (including pool questions just added), (2) already asked questions, (3) archived questions
             var existingQuestionTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // Add questions currently in queue
+            // Add questions currently in queue (including pool questions we just added)
             foreach (var q in questions)
             {
                 existingQuestionTexts.Add(q.Text.Trim().ToLowerInvariant());
@@ -906,10 +937,10 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 existingQuestionTexts.Add(q.Text.Trim().ToLowerInvariant());
             }
 
-            _logger.LogInformation("Checking against {Count} total existing questions (queue: {Queue}, session: {Session}, archived: {Archived})",
-                existingQuestionTexts.Count, questions.Count, sessionAskedQuestions.Count, poolArchivedQuestions.Count);
+            _logger.LogInformation("Checking against {Count} total existing questions (queue: {Queue}, session: {Session}, archived: {Archived}, pool added: {PoolAdded})",
+                existingQuestionTexts.Count, questions.Count, sessionAskedQuestions.Count, poolArchivedQuestions.Count, questionsFromPool.Count);
 
-            // Add generated questions to the current tour, skipping duplicates
+            // Add ONLY generated questions (not pool questions - those were already added)
             int added = 0;
             int skipped = 0;
             foreach (var question in generatedList)
@@ -928,15 +959,17 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 }
             }
 
-            _logger.LogInformation("Added {Added} unique questions, skipped {Skipped} duplicates", added, skipped);
+            _logger.LogInformation("Added {Added} unique questions from API, skipped {Skipped} duplicates. Total from pool: {PoolCount}",
+                added, skipped, questionsFromPool.Count);
 
             await _repository.SaveAsync(session, cancellationToken);
 
-            var statusMessage = session.Language == GameLanguage.Russian
-                ? $"🔄 Добавлено {added} новых вопросов"
-                : $"🔄 Added {added} new questions";
+            var totalAdded = added + questionsFromPool.Count;
+            var finalStatusMessage = session.Language == GameLanguage.Russian
+                ? $"🔄 Добавлено {totalAdded} вопросов ({questionsFromPool.Count} из пула, {added} сгенерировано)"
+                : $"🔄 Added {totalAdded} questions ({questionsFromPool.Count} from pool, {added} generated)";
 
-            await _messenger.SendAsync(session.ChatId, statusMessage, cancellationToken);
+            await _messenger.SendAsync(session.ChatId, finalStatusMessage, cancellationToken);
         }
         catch (Exception ex)
         {

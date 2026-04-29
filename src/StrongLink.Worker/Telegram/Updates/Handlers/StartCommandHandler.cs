@@ -60,6 +60,37 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 chatId, existingSession.Status, existingSession.Players.Count);
         }
 
+        // IDEMPOTENCE: Check if a scheduled game is already initialized and waiting
+        if (existingSession != null &&
+            (existingSession.Status == GameStatus.AwaitingPlayers || existingSession.Status == GameStatus.ReadyToStart) &&
+            existingSession.Metadata.TryGetValue("IsScheduledGame", out var isScheduledObj) &&
+            TryGetBoolFromMetadata(isScheduledObj, out var isScheduled) && isScheduled &&
+            existingSession.Metadata.TryGetValue("ScheduledAutoStartTime", out var autoStartObj) &&
+            TryGetStringFromMetadata(autoStartObj, out var autoStartStr) &&
+            DateTimeOffset.TryParse(autoStartStr, out var autoStartTime))
+        {
+            var timeRemaining = autoStartTime - DateTimeOffset.UtcNow;
+            if (timeRemaining.TotalSeconds > 0)
+            {
+                var minutes = (int)Math.Ceiling(timeRemaining.TotalMinutes);
+                var text = existingSession.Language == GameLanguage.Russian
+                    ? $"⏳ Игра уже запланирована и автоматически начнется через {minutes} минут(ы).\n\n" +
+                      $"Используйте /join чтобы присоединиться, или /begin чтобы начать сейчас."
+                    : $"⏳ Game is already scheduled and will auto-start in {minutes} minute(s).\n\n" +
+                      $"Use /join to participate, or /begin to start now.";
+
+                _logger.LogInformation("Ignoring /start for chat {ChatId} - game already scheduled to start at {Time} (in {Minutes}m)",
+                    chatId, autoStartTime, minutes);
+                await Client.SendTextMessageAsync(chatId, text, cancellationToken: cancellationToken);
+                return;
+            }
+            else
+            {
+                // Auto-start time has passed, let the command proceed to start the game
+                _logger.LogInformation("Scheduled game auto-start time has passed for chat {ChatId}. Processing /start command normally.", chatId);
+            }
+        }
+
         // Use smart topic selection to prioritize topics with unused questions
         var selectedTopics = await TopicSelector.SelectOptimalTopicsAsync(
             _poolRepository,
@@ -160,7 +191,24 @@ public sealed class StartCommandHandler : CommandHandlerBase
             for (var tourIndex = 0; tourIndex < 1; tourIndex++)
             {
                 var topic = session.Topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
+
+                // PRIORITY 1: Try to get questions from pool for this specific topic
                 var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, cancellationToken);
+
+                // PRIORITY 2: If not enough topic-specific questions, get ANY unused questions from pool
+                if (questionsFromPool.Count < requiredPerTour)
+                {
+                    var additionalNeeded = requiredPerTour - questionsFromPool.Count;
+                    _logger.LogInformation("Only {Available} topic-specific questions for '{Topic}'. Trying to get {Additional} more from general pool...",
+                        questionsFromPool.Count, topic, additionalNeeded);
+
+                    var anyPoolQuestions = await _poolRepository.SelectQuestionsAsync(string.Empty, additionalNeeded, cancellationToken);
+                    if (anyPoolQuestions.Count > 0)
+                    {
+                        questionsFromPool.AddRange(anyPoolQuestions);
+                        _logger.LogInformation("Added {Count} questions from general unused pool (any topic)", anyPoolQuestions.Count);
+                    }
+                }
 
                 if (questionsFromPool.Count >= requiredPerTour)
                 {
@@ -174,8 +222,8 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 }
                 else
                 {
-                    // Not enough in pool, need to generate
-                    _logger.LogInformation("Only {Available} questions in pool for tour {Tour}, generating {Needed} more",
+                    // Still not enough - need to generate via API
+                    _logger.LogInformation("Only {Available} questions available in pool for tour {Tour}, generating {Needed} more via API",
                         questionsFromPool.Count, tourIndex + 1, requiredPerTour - questionsFromPool.Count);
 
                     var provider = _factory.Resolve(session.QuestionSourceMode);
@@ -331,7 +379,23 @@ public sealed class StartCommandHandler : CommandHandlerBase
                 _logger.LogInformation("Background: Preparing tour {Tour}/{Total} - topic {Topic}",
                     tourIndex + 1, totalTours, topic);
 
+                // PRIORITY 1: Try topic-specific questions
                 var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, CancellationToken.None);
+
+                // PRIORITY 2: If not enough, get ANY unused questions from pool
+                if (questionsFromPool.Count < requiredPerTour)
+                {
+                    var additionalNeeded = requiredPerTour - questionsFromPool.Count;
+                    _logger.LogInformation("Background: Only {Available} topic-specific questions. Getting {Additional} more from general pool...",
+                        questionsFromPool.Count, additionalNeeded);
+
+                    var anyPoolQuestions = await _poolRepository.SelectQuestionsAsync(string.Empty, additionalNeeded, CancellationToken.None);
+                    if (anyPoolQuestions.Count > 0)
+                    {
+                        questionsFromPool.AddRange(anyPoolQuestions);
+                        _logger.LogInformation("Background: Added {Count} questions from general pool", anyPoolQuestions.Count);
+                    }
+                }
 
                 List<Question> tourQuestions;
                 if (questionsFromPool.Count >= requiredPerTour)
@@ -431,6 +495,76 @@ public sealed class StartCommandHandler : CommandHandlerBase
         {
             _logger.LogError(ex, "Background: Failed to prepare remaining tours for session {SessionId}", sessionId);
         }
+    }
+
+    /// <summary>
+    /// Safely extracts a boolean value from metadata object.
+    /// Handles both direct bool values and JsonElement deserialization.
+    /// </summary>
+    private static bool TryGetBoolFromMetadata(object obj, out bool value)
+    {
+        value = false;
+
+        if (obj == null)
+        {
+            return false;
+        }
+
+        // Handle direct bool
+        if (obj is bool boolValue)
+        {
+            value = boolValue;
+            return true;
+        }
+
+        // Handle JsonElement (from deserialization)
+        if (obj is System.Text.Json.JsonElement jsonElement)
+        {
+            if (jsonElement.ValueKind == System.Text.Json.JsonValueKind.True)
+            {
+                value = true;
+                return true;
+            }
+
+            if (jsonElement.ValueKind == System.Text.Json.JsonValueKind.False)
+            {
+                value = false;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Safely extracts a string value from metadata object.
+    /// Handles both direct string values and JsonElement deserialization.
+    /// </summary>
+    private static bool TryGetStringFromMetadata(object obj, out string value)
+    {
+        value = string.Empty;
+
+        if (obj == null)
+        {
+            return false;
+        }
+
+        // Handle direct string
+        if (obj is string strValue)
+        {
+            value = strValue;
+            return true;
+        }
+
+        // Handle JsonElement (from deserialization)
+        if (obj is System.Text.Json.JsonElement jsonElement &&
+            jsonElement.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            value = jsonElement.GetString() ?? string.Empty;
+            return true;
+        }
+
+        return false;
     }
 }
 

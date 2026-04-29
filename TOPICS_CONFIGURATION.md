@@ -86,17 +86,12 @@ Each game has a different mix of topics and order!
 
 ### For Production (Docker)
 
-1. Copy template:
-   ```bash
-   cp .env.docker .env
-   ```
-
-2. Edit `.env` and set your topics:
+1. Edit `.env` and set your topics:
    ```env
    GAME__TOPICS=Шахматы,Космос,История,Наука,Литература,Фильмы,Фантастика,Спорт
    ```
 
-3. Start container:
+2. Start container:
    ```bash
    docker-compose up -d
    ```
