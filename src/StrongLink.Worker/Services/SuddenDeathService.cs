@@ -51,15 +51,26 @@ public sealed class SuddenDeathService : ISuddenDeathService
                 };
             }
 
-            if (remainingAfterElimination >= 1)
+            if (remainingAfterElimination == 1)
             {
-                // Would leave 1-2 players, need to check if sudden death is needed
-                _logger.LogInformation("Elimination would leave {Remaining} players. Checking for sudden death need.",
-                    remainingAfterElimination);
+                // Exactly one player has a higher score - they win outright, no sudden death needed
+                _logger.LogInformation("Elimination of {Count} tied players leaves exactly 1 winner. No sudden death needed.",
+                    tiedForLowest.Count);
+                return new SuddenDeathDecision
+                {
+                    IsNeeded = false,
+                    Reason = "Single winner after eliminating all tied-for-lowest players"
+                };
+            }
+
+            if (remainingAfterElimination == 2)
+            {
+                // Would leave exactly 2 players
+                _logger.LogInformation("Elimination would leave 2 players. Checking for sudden death need.");
 
                 if (tiedForLowest.Count > 1)
                 {
-                    // Multiple players tied for lowest - need sudden death to determine final rankings
+                    // Multiple players tied for lowest - need sudden death to decide who gets eliminated
                     _logger.LogInformation("Sudden death needed: {Count} players tied for lowest score",
                         tiedForLowest.Count);
 

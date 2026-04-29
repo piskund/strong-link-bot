@@ -58,6 +58,16 @@ public sealed class GameLifecycleService : IGameLifecycleService
         _logger.LogInformation("StartGameAsync called for chat {ChatId}. Players: {PlayerCount}, Status: {Status}",
             session.ChatId, session.Players.Count, session.Status);
 
+        if (session.Status == GameStatus.InProgress || session.Status == GameStatus.SuddenDeath)
+        {
+            _logger.LogWarning("Cannot start game for chat {ChatId} - game already in progress (Status: {Status})", session.ChatId, session.Status);
+            var text = session.Language == GameLanguage.Russian
+                ? "⚠️ Игра уже идёт. Используйте /stop чтобы остановить текущую игру."
+                : "⚠️ A game is already in progress. Use /stop to end the current game.";
+            await _messenger.SendAsync(session.ChatId, text, cancellationToken);
+            return;
+        }
+
         if (session.Players.Count < 1)
         {
             _logger.LogWarning("Not enough players to start game. Players: {PlayerCount}", session.Players.Count);
@@ -485,6 +495,12 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
     public async Task StopGameAsync(GameSession session, CancellationToken cancellationToken)
     {
+        if (session.Status == GameStatus.Cancelled || session.Status == GameStatus.Completed)
+        {
+            _logger.LogWarning("StopGameAsync called for chat {ChatId} but game is already stopped (Status: {Status}). Ignoring.", session.ChatId, session.Status);
+            return;
+        }
+
         _logger.LogInformation("Stopping game for chat {ChatId}", session.ChatId);
 
         // Cancel any active answer timer to prevent the game from continuing
@@ -577,10 +593,10 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
                 var remainingAfterElimination = activePlayers.Count - tiedForLowest.Count;
 
-                // Eliminate if it's safe to do so (would leave 3+ players)
-                if (remainingAfterElimination >= 3)
+                // Eliminate if safe: leaves 3+ players, or leaves exactly 1 winner (all tied are last place)
+                if (remainingAfterElimination >= 3 || remainingAfterElimination == 1)
                 {
-                    _logger.LogInformation("Eliminating {Count} player(s) tied for lowest score", tiedForLowest.Count);
+                    _logger.LogInformation("Eliminating {Count} player(s) tied for lowest score (leaves {Remaining})", tiedForLowest.Count, remainingAfterElimination);
 
                     foreach (var player in tiedForLowest)
                     {
@@ -915,6 +931,14 @@ public sealed class GameLifecycleService : IGameLifecycleService
             var generatedList = generated.Values.FirstOrDefault() ?? new List<Question>();
             _logger.LogInformation("Generated {Count} new questions. Adding to current tour queue.", generatedList.Count);
 
+            if (generatedList.Count == 0 && questionsFromPool.Count == 0)
+            {
+                var failMessage = session.Language == GameLanguage.Russian
+                    ? "⚠️ Не удалось получить дополнительные вопросы. Продолжаем с имеющимися."
+                    : "⚠️ Could not fetch additional questions. Continuing with remaining ones.";
+                await _messenger.SendAsync(session.ChatId, failMessage, cancellationToken);
+            }
+
             // Get existing question texts to avoid duplicates
             // Include: (1) questions in queue (including pool questions just added), (2) already asked questions, (3) archived questions
             var existingQuestionTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -965,11 +989,14 @@ public sealed class GameLifecycleService : IGameLifecycleService
             await _repository.SaveAsync(session, cancellationToken);
 
             var totalAdded = added + questionsFromPool.Count;
-            var finalStatusMessage = session.Language == GameLanguage.Russian
-                ? $"🔄 Добавлено {totalAdded} вопросов ({questionsFromPool.Count} из пула, {added} сгенерировано)"
-                : $"🔄 Added {totalAdded} questions ({questionsFromPool.Count} from pool, {added} generated)";
+            if (totalAdded > 0)
+            {
+                var finalStatusMessage = session.Language == GameLanguage.Russian
+                    ? $"🔄 Добавлено {totalAdded} вопросов ({questionsFromPool.Count} из пула, {added} сгенерировано)"
+                    : $"🔄 Added {totalAdded} questions ({questionsFromPool.Count} from pool, {added} generated)";
 
-            await _messenger.SendAsync(session.ChatId, finalStatusMessage, cancellationToken);
+                await _messenger.SendAsync(session.ChatId, finalStatusMessage, cancellationToken);
+            }
         }
         catch (Exception ex)
         {
