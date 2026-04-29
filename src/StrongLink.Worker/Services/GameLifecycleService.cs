@@ -843,15 +843,28 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
             // PRIORITY 1: Try to get topic-specific questions from unused pool
             _logger.LogInformation("Attempting to get {Count} topic-specific questions from pool for '{Topic}'", questionsNeeded, topic);
-            var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, questionsNeeded, cancellationToken);
+
+            // Build dedup set from already-asked questions and current queue
+            var sessionAskedForDedup = session.Metadata.TryGetValue("AskedQuestions", out var dedupObj)
+                ? ExtractAskedQuestions(dedupObj)
+                : new List<Question>();
+            var dedupTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var q in sessionAskedForDedup) dedupTexts.Add(q.Text.Trim().ToLowerInvariant());
+            foreach (var q in questions) dedupTexts.Add(q.Text.Trim().ToLowerInvariant());
+
+            var rawFromPool = await _poolRepository.SelectQuestionsAsync(topic, questionsNeeded, cancellationToken);
+            var questionsFromPool = rawFromPool
+                .Where(q => !dedupTexts.Contains(q.Text.Trim().ToLowerInvariant()))
+                .ToList();
 
             if (questionsFromPool.Count > 0)
             {
-                _logger.LogInformation("Found {Count} topic-specific questions in pool. Adding to queue.", questionsFromPool.Count);
+                _logger.LogInformation("Found {Count} non-duplicate topic questions in pool ({Raw} raw). Adding to queue.", questionsFromPool.Count, rawFromPool.Count);
 
                 foreach (var question in questionsFromPool)
                 {
                     questions.Enqueue(question);
+                    dedupTexts.Add(question.Text.Trim().ToLowerInvariant());
                 }
 
                 await _repository.SaveAsync(session, cancellationToken);
@@ -1021,40 +1034,40 @@ public sealed class GameLifecycleService : IGameLifecycleService
         // Calculate required questions based on active players
         var requiredPerTour = session.ActivePlayers.Count() * session.RoundsPerTour;
 
-        // NEW STRATEGY: Check if there are ANY unused questions in the pool
-        var poolStats = await _poolRepository.GetPoolStatsAsync(cancellationToken);
-        _logger.LogInformation("Pool stats before tour {Tour}: {Unused} unused questions available",
-            session.CurrentTour, poolStats.Unused);
+        // Use the pre-assigned topic for this tour
+        var topic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1) ?? $"Topic {session.CurrentTour}";
 
-        // Try to get questions from unused pool first (any topic)
-        var questionsFromPool = await _poolRepository.SelectQuestionsAsync(string.Empty, requiredPerTour, cancellationToken);
-        _logger.LogDebug("Found {Count} unused questions in pool for tour {Tour}",
-            questionsFromPool.Count, session.CurrentTour);
+        // Build a set of all question texts already known to this session (asked + in any queue)
+        var sessionAskedForDedup = session.Metadata.TryGetValue("AskedQuestions", out var askedObjDedup)
+            ? ExtractAskedQuestions(askedObjDedup)
+            : new List<Question>();
+        var usedTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var q in sessionAskedForDedup) usedTexts.Add(q.Text.Trim().ToLowerInvariant());
+        foreach (var queue in session.QuestionsByTour.Values)
+            foreach (var q in queue) usedTexts.Add(q.Text.Trim().ToLowerInvariant());
+
+        // Try to get topic-specific questions from pool first
+        var rawFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, cancellationToken);
+        var questionsFromPool = rawFromPool
+            .Where(q => !usedTexts.Contains(q.Text.Trim().ToLowerInvariant()))
+            .ToList();
+        _logger.LogInformation("Found {Count} non-duplicate pool questions for tour {Tour} topic '{Topic}' ({Raw} raw, {Dupes} dupes filtered)",
+            questionsFromPool.Count, session.CurrentTour, topic, rawFromPool.Count, rawFromPool.Count - questionsFromPool.Count);
 
         if (questionsFromPool.Count >= requiredPerTour)
         {
-            // Enough questions in pool - use them
-            // The questions already have topics assigned, so we keep them as-is
             session.QuestionsByTour[session.CurrentTour] = new Queue<Question>(questionsFromPool.Take(requiredPerTour));
             _logger.LogInformation("Using {Count} pooled questions for tour {Tour}", requiredPerTour, session.CurrentTour);
             await _repository.SaveAsync(session, cancellationToken);
             return;
         }
 
-        // Not enough questions in pool - need to generate
-        // Select topic with configured probability from Topics list vs random AI-generated
-        var selectedTopic = AiQuestionProvider.SelectTopicWithProbability(
-            session.Topics,
-            _gameOptions.TopicSelectionProbability);
-        var isRandomTopic = string.IsNullOrEmpty(selectedTopic);
-        var topicDisplay = isRandomTopic
-            ? (session.Language == GameLanguage.Russian ? "случайная тема" : "random topic")
-            : selectedTopic;
+        // Not enough in pool - generate via API
+        var selectedTopic = topic;
+        var topicDisplay = topic;
 
-        var probabilityPercent = (int)(_gameOptions.TopicSelectionProbability * 100);
-        _logger.LogInformation(
-            "Generating questions for tour {Tour}. Selected topic: '{Topic}' (random: {IsRandom}, probability: {Probability}% from list)",
-            session.CurrentTour, topicDisplay, isRandomTopic, probabilityPercent);
+        _logger.LogInformation("Generating questions for tour {Tour} with topic '{Topic}'",
+            session.CurrentTour, topicDisplay);
 
         var generatingMessage = session.Language == GameLanguage.Russian
             ? $"🔄 Подготавливаю вопросы для следующего тура: \"{topicDisplay}\"..."

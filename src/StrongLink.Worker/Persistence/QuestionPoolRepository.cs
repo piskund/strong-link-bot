@@ -366,52 +366,24 @@ public sealed class QuestionPoolRepository : IQuestionPoolRepository
         {
             var sanitizedTopic = SanitizeTopicName(topic);
             var topicFile = GetUnusedTopicFilePath(sanitizedTopic);
-            var generalFile = GetUnusedTopicFilePath("General");
 
-            // Load questions from topic-specific file
+            // Load questions from topic-specific file only — no cross-topic fallback
             var topicQuestions = await LoadQuestionsFromFileAsync(topicFile, cancellationToken);
 
-            // Randomize topic questions
-            var shuffledTopicQuestions = topicQuestions.OrderBy(_ => Random.Shared.Next()).ToList();
+            var selected = topicQuestions.OrderBy(_ => Random.Shared.Next()).Take(count).ToList();
 
-            // If not enough, add from General pool
-            if (shuffledTopicQuestions.Count < count)
-            {
-                var generalQuestions = await LoadQuestionsFromFileAsync(generalFile, cancellationToken);
-                var shuffledGeneralQuestions = generalQuestions.OrderBy(_ => Random.Shared.Next()).ToList();
-                shuffledTopicQuestions.AddRange(shuffledGeneralQuestions);
-            }
-
-            // Take requested count
-            var selected = shuffledTopicQuestions.Take(count).ToList();
-
-            // Remove selected questions from their respective files
             if (selected.Count > 0)
             {
                 var selectedTexts = new HashSet<string>(
                     selected.Select(q => NormalizeText(q.Text)),
                     StringComparer.OrdinalIgnoreCase);
 
-                // Remove from topic file
-                var remainingTopic = topicQuestions
+                var remaining = topicQuestions
                     .Where(q => !selectedTexts.Contains(NormalizeText(q.Text)))
                     .ToList();
-                await SaveQuestionsToFileAsync(topicFile, remainingTopic, cancellationToken);
+                await SaveQuestionsToFileAsync(topicFile, remaining, cancellationToken);
 
-                // Also check general file if we used it
-                if (shuffledTopicQuestions.Count > topicQuestions.Count)
-                {
-                    var generalQuestions = await LoadQuestionsFromFileAsync(generalFile, cancellationToken);
-                    var remainingGeneral = generalQuestions
-                        .Where(q => !selectedTexts.Contains(NormalizeText(q.Text)))
-                        .ToList();
-                    await SaveQuestionsToFileAsync(generalFile, remainingGeneral, cancellationToken);
-                }
-
-                _logger.LogInformation("Selected {Count} questions for topic '{Topic}' (topic: {TopicCount}, general: {GeneralCount})",
-                    selected.Count, topic,
-                    topicQuestions.Count - remainingTopic.Count,
-                    selected.Count - (topicQuestions.Count - remainingTopic.Count));
+                _logger.LogInformation("Selected {Count} questions for topic '{Topic}'", selected.Count, topic);
             }
 
             return selected;
