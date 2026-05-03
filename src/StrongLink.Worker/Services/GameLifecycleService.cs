@@ -163,8 +163,13 @@ public sealed class GameLifecycleService : IGameLifecycleService
             if (session.Status == GameStatus.SuddenDeath)
             {
                 // Get the sudden death starting round from metadata
-                if (!session.Metadata.TryGetValue("SuddenDeathStartRound", out var startRoundObj) ||
-                    startRoundObj is not int startRound)
+                int startRound;
+                if (session.Metadata.TryGetValue("SuddenDeathStartRound", out var startRoundObj) &&
+                    startRoundObj is int parsedStartRound)
+                {
+                    startRound = parsedStartRound;
+                }
+                else
                 {
                     _logger.LogError("SuddenDeathStartRound not found in metadata! This should not happen.");
                     startRound = session.CurrentRound; // Fallback
@@ -459,20 +464,19 @@ public sealed class GameLifecycleService : IGameLifecycleService
             isCorrect = string.Equals(normalizedAnswer, normalizedCorrect, StringComparison.OrdinalIgnoreCase);
         }
 
+        var inSuddenDeath = session.Status == GameStatus.SuddenDeath;
         if (isCorrect)
         {
-            // Update score using the appropriate handler for the current game mode
-            var scoreHandler = session.Status == GameStatus.SuddenDeath
-                ? _suddenDeathScoreHandler
-                : _regularScoreHandler;
+            var scoreHandler = inSuddenDeath ? _suddenDeathScoreHandler : _regularScoreHandler;
             scoreHandler.UpdateScore(player, isCorrect: true);
-            player.CorrectAnswers += 1;
+            // CorrectAnswers/IncorrectAnswers track regular-game stats only
+            if (!inSuddenDeath) player.CorrectAnswers += 1;
             var text = _localization.GetString(session.Language, "Game.Correct");
             await _messenger.SendAsync(session.ChatId, text, cancellationToken);
         }
         else
         {
-            player.IncorrectAnswers += 1;
+            if (!inSuddenDeath) player.IncorrectAnswers += 1;
             _logger.LogInformation("Player {PlayerName} answered INCORRECTLY. Answer: '{Answer}', Correct: '{Correct}'",
                 player.DisplayName, answer, session.CurrentQuestion.Answer);
             var text = string.Format(
@@ -787,8 +791,8 @@ public sealed class GameLifecycleService : IGameLifecycleService
             _logger.LogInformation("Processing timeout for player {PlayerName}. Question: {Question}",
                 player.DisplayName, session.CurrentQuestion.Text);
 
-            // Treat timeout as incorrect answer
-            player.IncorrectAnswers += 1;
+            // Treat timeout as incorrect answer — don't count stats during sudden death
+            if (session.Status != GameStatus.SuddenDeath) player.IncorrectAnswers += 1;
 
             var text = string.Format(
                 _localization.GetString(session.Language, "Game.Timeout"),
@@ -812,15 +816,16 @@ public sealed class GameLifecycleService : IGameLifecycleService
         }
     }
 
+    // Tracks chats that already have a background generation task running, to avoid duplicates.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, bool> _generatingChats = new();
+
     private async Task EnsureQuestionsAvailableAsync(GameSession session, CancellationToken cancellationToken)
     {
-        // Determine how many questions we need in reserve based on game mode
         var scoreHandler = session.Status == GameStatus.SuddenDeath
             ? _suddenDeathScoreHandler
             : _regularScoreHandler;
         var (threshold, targetBuffer) = scoreHandler.GetQuestionThresholds();
 
-        // Check current tour questions
         if (!session.QuestionsByTour.TryGetValue(session.CurrentTour, out var questions))
         {
             questions = new Queue<Question>();
@@ -828,10 +833,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
         }
 
         if (questions.Count >= threshold)
-        {
-            // We have enough questions, no need to generate
             return;
-        }
 
         _logger.LogInformation("Running low on questions for tour {Tour} (current: {Count}, threshold: {Threshold}). Checking pool first...",
             session.CurrentTour, questions.Count, threshold);
@@ -841,10 +843,9 @@ public sealed class GameLifecycleService : IGameLifecycleService
             var topic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1) ?? $"Topic {session.CurrentTour}";
             var questionsNeeded = Math.Max(targetBuffer - questions.Count, targetBuffer);
 
-            // PRIORITY 1: Try to get topic-specific questions from unused pool
+            // PRIORITY 1: pool
             _logger.LogInformation("Attempting to get {Count} topic-specific questions from pool for '{Topic}'", questionsNeeded, topic);
 
-            // Build dedup set from already-asked questions and current queue
             var sessionAskedForDedup = session.Metadata.TryGetValue("AskedQuestions", out var dedupObj)
                 ? ExtractAskedQuestions(dedupObj)
                 : new List<Question>();
@@ -874,148 +875,173 @@ public sealed class GameLifecycleService : IGameLifecycleService
                     var statusMessage = session.Language == GameLanguage.Russian
                         ? $"🔄 Добавлено {questionsFromPool.Count} вопросов из пула"
                         : $"🔄 Added {questionsFromPool.Count} questions from pool";
-
                     await _messenger.SendAsync(session.ChatId, statusMessage, cancellationToken);
                     return;
                 }
 
                 questionsNeeded = Math.Max(targetBuffer - questions.Count, targetBuffer);
-                _logger.LogInformation("Still need {Count} more questions. Generating via API...", questionsNeeded);
+                _logger.LogInformation("Still need {Count} more questions. Scheduling background generation...", questionsNeeded);
             }
 
-            // PRIORITY 2: Generate via API
-            var provider = _questionProviderFactory.Resolve(session.QuestionSourceMode);
-            _logger.LogInformation("Generating {Count} new questions for topic '{Topic}'", questionsNeeded, topic);
+            // PRIORITY 2: API generation.
+            // If the queue is completely empty we MUST generate synchronously — returning with 0
+            // questions causes CompleteTour → AdvanceRound → CompleteTour infinite recursion.
+            // If we already have some questions, fire in the background so the game doesn't block.
+            if (questions.Count == 0)
+            {
+                _logger.LogInformation("Queue is empty for tour {Tour} — generating synchronously to avoid infinite loop.", session.CurrentTour);
 
-            // Get archived questions from both session and pool repository to avoid repetition
+                var provider = _questionProviderFactory.Resolve(session.QuestionSourceMode);
+                var sessionAskedSync = session.Metadata.TryGetValue("AskedQuestions", out var syncAskedObj)
+                    ? ExtractAskedQuestions(syncAskedObj) : new List<Question>();
+                var archivedSync = await _poolRepository.GetArchivedQuestionsByTopicAllTimeAsync(topic, cancellationToken);
+                var allArchivedSync = new List<Question>(sessionAskedSync);
+                allArchivedSync.AddRange(archivedSync);
+
+                IReadOnlyDictionary<int, List<Question>> syncGenerated;
+                if (provider is AiQuestionProvider aiProviderSync)
+                {
+                    syncGenerated = await aiProviderSync.PrepareQuestionPoolAsync(
+                        new[] { topic }, 1, questionsNeeded, session.Players, session.Language,
+                        session.MatureContent, allArchivedSync, session.DifficultyLevel, cancellationToken);
+                }
+                else
+                {
+                    syncGenerated = await provider.PrepareQuestionPoolAsync(
+                        new[] { topic }, 1, questionsNeeded, session.Players, session.Language,
+                        session.MatureContent, cancellationToken);
+                }
+
+                var syncList = syncGenerated.Values.FirstOrDefault() ?? new List<Question>();
+                _logger.LogInformation("Synchronous generation produced {Count} questions for empty queue.", syncList.Count);
+
+                foreach (var q in syncList)
+                {
+                    var key = q.Text.Trim().ToLowerInvariant();
+                    if (!dedupTexts.Contains(key))
+                    {
+                        questions.Enqueue(q with { Topic = topic });
+                        dedupTexts.Add(key);
+                    }
+                }
+
+                await _repository.SaveAsync(session, cancellationToken);
+
+                if (syncList.Count == 0)
+                {
+                    var failMessage = session.Language == GameLanguage.Russian
+                        ? "⚠️ Не удалось получить дополнительные вопросы. Продолжаем с имеющимися."
+                        : "⚠️ Could not fetch additional questions. Continuing with remaining ones.";
+                    await _messenger.SendAsync(session.ChatId, failMessage, cancellationToken);
+                }
+
+                return;
+            }
+
+            if (!_generatingChats.TryAdd(session.ChatId, true))
+            {
+                _logger.LogInformation("Background generation already running for chat {ChatId}. Skipping duplicate.", session.ChatId);
+                return;
+            }
+
             var sessionAskedQuestions = session.Metadata.TryGetValue("AskedQuestions", out var askedObj)
                 ? ExtractAskedQuestions(askedObj)
                 : new List<Question>();
 
-            // Get archived questions filtered by current topic and recent months (last 2 months)
-            // This is more efficient and focuses on preventing repetition from recent games
-            var poolArchivedQuestions = await _poolRepository.GetArchivedQuestionsByTopicAsync(
-                topic,
-                maxMonthsBack: 1,  // Look back 2 months (current month + 1 month back)
-                cancellationToken);
+            var poolArchivedQuestions = await _poolRepository.GetArchivedQuestionsByTopicAllTimeAsync(
+                topic, cancellationToken);
 
-            // Combine both sources
             var allArchivedQuestions = new List<Question>(sessionAskedQuestions);
             allArchivedQuestions.AddRange(poolArchivedQuestions);
 
             _logger.LogInformation("Using {SessionCount} session questions + {PoolCount} archived questions from topic '{Topic}' for AI context",
                 sessionAskedQuestions.Count, poolArchivedQuestions.Count, topic);
 
-            // Notify chat that on-the-fly generation is starting
-            var generatingMessage = session.Language == GameLanguage.Russian
-                ? $"🤖 Генерирую дополнительные вопросы для тура {session.CurrentTour}: \"{topic}\"..."
-                : $"🤖 Generating additional questions for tour {session.CurrentTour}: \"{topic}\"...";
+            // Capture values needed inside the background task (avoid capturing mutable session state).
+            var chatId = session.ChatId;
+            var language = session.Language;
+            var matureContent = session.MatureContent;
+            var difficultyLevel = session.DifficultyLevel;
+            var players = session.Players.ToList();
+            var sourceMode = session.QuestionSourceMode;
+            var currentTour = session.CurrentTour;
+            var questionsNeededCapture = questionsNeeded;
+            var topicCapture = topic;
+            var allArchivedCapture = allArchivedQuestions;
 
-            await _messenger.SendAsync(session.ChatId, generatingMessage, cancellationToken);
-
-            // Generate questions via API
-            IReadOnlyDictionary<int, List<Question>> generated;
-            if (provider is AiQuestionProvider aiProvider)
+            _ = Task.Run(async () =>
             {
-                generated = await aiProvider.PrepareQuestionPoolAsync(
-                    new[] { topic },
-                    1,
-                    questionsNeeded,
-                    session.Players,
-                    session.Language,
-                    session.MatureContent,
-                    allArchivedQuestions,
-                    cancellationToken);
-            }
-            else
-            {
-                generated = await provider.PrepareQuestionPoolAsync(
-                    new[] { topic },
-                    1,
-                    questionsNeeded,
-                    session.Players,
-                    session.Language,
-                    session.MatureContent,
-                    cancellationToken);
-            }
-
-            var generatedList = generated.Values.FirstOrDefault() ?? new List<Question>();
-            _logger.LogInformation("Generated {Count} new questions. Adding to current tour queue.", generatedList.Count);
-
-            if (generatedList.Count == 0 && questionsFromPool.Count == 0)
-            {
-                var failMessage = session.Language == GameLanguage.Russian
-                    ? "⚠️ Не удалось получить дополнительные вопросы. Продолжаем с имеющимися."
-                    : "⚠️ Could not fetch additional questions. Continuing with remaining ones.";
-                await _messenger.SendAsync(session.ChatId, failMessage, cancellationToken);
-            }
-
-            // Get existing question texts to avoid duplicates
-            // Include: (1) questions in queue (including pool questions just added), (2) already asked questions, (3) archived questions
-            var existingQuestionTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            // Add questions currently in queue (including pool questions we just added)
-            foreach (var q in questions)
-            {
-                existingQuestionTexts.Add(q.Text.Trim().ToLowerInvariant());
-            }
-
-            // Add questions already asked in this session
-            foreach (var q in sessionAskedQuestions)
-            {
-                existingQuestionTexts.Add(q.Text.Trim().ToLowerInvariant());
-            }
-
-            // Add archived questions from pool
-            foreach (var q in poolArchivedQuestions)
-            {
-                existingQuestionTexts.Add(q.Text.Trim().ToLowerInvariant());
-            }
-
-            _logger.LogInformation("Checking against {Count} total existing questions (queue: {Queue}, session: {Session}, archived: {Archived}, pool added: {PoolAdded})",
-                existingQuestionTexts.Count, questions.Count, sessionAskedQuestions.Count, poolArchivedQuestions.Count, questionsFromPool.Count);
-
-            // Add ONLY generated questions (not pool questions - those were already added)
-            int added = 0;
-            int skipped = 0;
-            foreach (var question in generatedList)
-            {
-                var normalizedText = question.Text.Trim().ToLowerInvariant();
-                if (!existingQuestionTexts.Contains(normalizedText))
+                try
                 {
-                    questions.Enqueue(question with { Topic = topic });
-                    existingQuestionTexts.Add(normalizedText);
-                    added++;
+                    _logger.LogInformation("Background generation started for chat {ChatId}, tour {Tour}, topic '{Topic}'",
+                        chatId, currentTour, topicCapture);
+
+                    var provider = _questionProviderFactory.Resolve(sourceMode);
+
+                    IReadOnlyDictionary<int, List<Question>> generated;
+                    if (provider is AiQuestionProvider aiProvider)
+                    {
+                        generated = await aiProvider.PrepareQuestionPoolAsync(
+                            new[] { topicCapture },
+                            1,
+                            questionsNeededCapture,
+                            players,
+                            language,
+                            matureContent,
+                            allArchivedCapture,
+                            difficultyLevel,
+                            CancellationToken.None);
+                    }
+                    else
+                    {
+                        generated = await provider.PrepareQuestionPoolAsync(
+                            new[] { topicCapture },
+                            1,
+                            questionsNeededCapture,
+                            players,
+                            language,
+                            matureContent,
+                            CancellationToken.None);
+                    }
+
+                    var generatedList = generated.Values.FirstOrDefault() ?? new List<Question>();
+                    _logger.LogInformation("Background generation produced {Count} questions for chat {ChatId}", generatedList.Count, chatId);
+
+                    // Check if the game is still running (quick status check without loading full session)
+                    var liveSession = await _repository.LoadAsync(chatId, CancellationToken.None);
+                    if (liveSession == null ||
+                        liveSession.Status == GameStatus.Completed ||
+                        liveSession.Status == GameStatus.Cancelled)
+                    {
+                        _logger.LogInformation("Session gone or finished by the time background generation completed. Discarding {Count} questions.", generatedList.Count);
+                        return;
+                    }
+
+                    // Always add generated questions to the shared pool rather than writing directly
+                    // into the session queue. Writing into the session requires a SaveAsync which races
+                    // with the foreground (especially during sudden death where SD metadata would be
+                    // overwritten by the stale deserialized liveSession). The pool is safe to write
+                    // concurrently; EnsureQuestionsAvailableAsync will pull from it on the next round.
+                    if (generatedList.Count > 0)
+                    {
+                        await _poolRepository.AddToUnusedPoolAsync(generatedList, CancellationToken.None);
+                        _logger.LogInformation("Background generation added {Count} questions to pool for chat {ChatId}.", generatedList.Count, chatId);
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    skipped++;
-                    _logger.LogDebug("Skipping duplicate question: {Question}", question.Text);
+                    _logger.LogError(ex, "Background question generation failed for chat {ChatId}, tour {Tour}", chatId, currentTour);
                 }
-            }
-
-            _logger.LogInformation("Added {Added} unique questions from API, skipped {Skipped} duplicates. Total from pool: {PoolCount}",
-                added, skipped, questionsFromPool.Count);
-
-            await _repository.SaveAsync(session, cancellationToken);
-
-            var totalAdded = added + questionsFromPool.Count;
-            if (totalAdded > 0)
-            {
-                var finalStatusMessage = session.Language == GameLanguage.Russian
-                    ? $"🔄 Добавлено {totalAdded} вопросов ({questionsFromPool.Count} из пула, {added} сгенерировано)"
-                    : $"🔄 Added {totalAdded} questions ({questionsFromPool.Count} from pool, {added} generated)";
-
-                await _messenger.SendAsync(session.ChatId, finalStatusMessage, cancellationToken);
-            }
+                finally
+                {
+                    _generatingChats.TryRemove(chatId, out _);
+                }
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to generate questions on the fly for chat {ChatId}, tour {Tour}",
+            _logger.LogError(ex, "Failed to ensure questions for chat {ChatId}, tour {Tour}",
                 session.ChatId, session.CurrentTour);
-
-            // Don't throw - let the game continue with whatever questions remain
-            // The game will end gracefully if it truly runs out
         }
     }
 
@@ -1084,7 +1110,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 ? ExtractAskedQuestions(askedObj)
                 : new List<Question>();
 
-            var poolArchivedQuestions = await _poolRepository.GetArchivedQuestionsAsync(cancellationToken);
+            var poolArchivedQuestions = await _poolRepository.GetArchivedQuestionsByTopicAllTimeAsync(selectedTopic, cancellationToken);
 
             var allArchivedQuestions = new List<Question>(sessionAskedQuestions);
             allArchivedQuestions.AddRange(poolArchivedQuestions);

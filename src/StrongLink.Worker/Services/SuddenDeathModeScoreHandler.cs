@@ -30,7 +30,9 @@ public sealed class SuddenDeathModeScoreHandler : IGameModeScoreHandler
 
     public (int threshold, int targetBuffer) GetQuestionThresholds()
     {
-        // Sudden death requires more questions in reserve since duration is unpredictable
-        return (threshold: 15, targetBuffer: 20);
+        // SD uses 1 question per participant per round — a small buffer is fine.
+        // Keeping this low avoids triggering background generation during SD, which
+        // would race with the foreground saving SD metadata.
+        return (threshold: 5, targetBuffer: 10);
     }
 }

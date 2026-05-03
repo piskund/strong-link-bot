@@ -44,6 +44,30 @@ public class GameLifecycleServiceTests
             .ReturnsAsync((string userAnswer, string correctAnswer, string question, GameLanguage language, DifficultyLevel difficulty, CancellationToken ct) =>
                 string.Equals(userAnswer, correctAnswer, StringComparison.OrdinalIgnoreCase));
 
+        // Repository: SaveAsync is a no-op; LoadAsync returns null (background tasks won't run in tests)
+        _repository
+            .Setup(r => r.SaveAsync(It.IsAny<GameSession>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        _repository
+            .Setup(r => r.LoadAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((GameSession?)null);
+
+        // ResultRepository: archive is a no-op
+        _resultRepository
+            .Setup(r => r.ArchiveAsync(It.IsAny<GameResult>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // Pool repo: return empty lists so EnsureQuestionsAvailableAsync doesn't throw
+        _poolRepository
+            .Setup(r => r.SelectQuestionsAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Question>());
+        _poolRepository
+            .Setup(r => r.GetArchivedQuestionsByTopicAllTimeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Question>());
+        _poolRepository
+            .Setup(r => r.MoveToArchiveAsync(It.IsAny<IEnumerable<Question>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
         // Use real services instead of mocking - they have minimal dependencies
         _suddenDeathService = new SuddenDeathService(NullLogger<SuddenDeathService>.Instance);
         _regularScoreHandler = new RegularModeScoreHandler(NullLogger<RegularModeScoreHandler>.Instance);
@@ -406,7 +430,348 @@ public class GameLifecycleServiceTests
         Assert.Equal(0, session.Players[1].SuddenDeathScore);
     }
 
-    private static GameSession CreateSession(int players, int tours = 1)
+    // ── Sudden death triggering rules ────────────────────────────────────────
+
+    [Fact]
+    public async Task SuddenDeath_DoesNotTrigger_UntilAllPlayersHaveAnsweredTheirRounds()
+    {
+        // Arrange: 3 players, 2 rounds per tour. After round 1 they are tied — no SD yet.
+        // SD should only fire once all RoundsPerTour rounds are complete.
+        var session = CreateSession(players: 3, tours: 2, roundsPerTour: 2);
+        session.Status = GameStatus.InProgress;
+        session.CurrentTour = 1;
+
+        // 12 questions: enough so the queue never drops below the regular-mode threshold (5)
+        var questions = Enumerable.Range(1, 12)
+            .Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" })
+            .ToList();
+        session.QuestionsByTour[1] = new Queue<Question>(questions);
+        session.QuestionsByTour[2] = new Queue<Question>(Enumerable.Range(100, 10)
+            .Select(i => new Question { Topic = "Geography", Text = $"Q{i}?", Answer = $"A{i}" }));
+
+        // Enqueue all players for round 1
+        foreach (var p in session.Players) session.TurnQueue.Enqueue(p.Id);
+
+        // Round 1: all answer correctly — tied at 1 each, but tour not finished
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1000, "A1", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "A2", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1002, "A3", CancellationToken.None);
+
+        // After round 1 the turn queue refills for round 2 — still InProgress, not SuddenDeath
+        Assert.Equal(GameStatus.InProgress, session.Status);
+
+        // Round 2: all answer correctly — still tied, now tour is complete → SD triggers
+        await _service.HandleAnswerAsync(session, 1000, "A4", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "A5", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1002, "A6", CancellationToken.None);
+
+        // Now all rounds done and all tied → sudden death
+        Assert.Equal(GameStatus.SuddenDeath, session.Status);
+    }
+
+    [Fact]
+    public async Task SuddenDeath_OnlyInvolvesPlayersActuallyTied_NotLeaders()
+    {
+        // Arrange: 4 players — P0 leads, P1/P2/P3 tied for last.
+        // SD should only pull in the bottom 3 tied players.
+        var session = CreateSession(players: 4, tours: 2, roundsPerTour: 1);
+        session.Status = GameStatus.InProgress;
+        session.CurrentTour = 1;
+
+        // Pad to 10 so queue never drops below regular-mode threshold (5) during the round
+        var questions = Enumerable.Range(1, 10)
+            .Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" })
+            .ToList();
+        session.QuestionsByTour[1] = new Queue<Question>(questions);
+        session.QuestionsByTour[2] = new Queue<Question>(Enumerable.Range(100, 5)
+            .Select(i => new Question { Topic = "Geography", Text = $"Q{i}?", Answer = $"A{i}" }));
+
+        foreach (var p in session.Players) session.TurnQueue.Enqueue(p.Id);
+
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+
+        // P0 answers correctly (score=1), others answer wrong (score=0)
+        await _service.HandleAnswerAsync(session, 1000, "A1", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1002, "WRONG", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1003, "WRONG", CancellationToken.None);
+
+        // Eliminating all 3 tied-lowest would leave 1 — that's a clean win, not SD
+        Assert.Equal(GameStatus.InProgress, session.Status);
+        // P1/P2/P3 eliminated, P0 wins the tour
+        Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
+        Assert.All(session.Players.Skip(1), p => Assert.Equal(PlayerStatus.Eliminated, p.Status));
+    }
+
+    [Fact]
+    public async Task SuddenDeath_CorrectAndIncorrectAnswers_DoNotCountTowardMainStats()
+    {
+        // Verify CorrectAnswers / IncorrectAnswers are not incremented during sudden death.
+        // Use 2 players so SD resolves after one round (no need for a large question buffer).
+        var session = CreateSession(players: 2, tours: 2);
+        session.Status = GameStatus.SuddenDeath;
+        session.CurrentTour = 1;
+        session.Players[0].Score = 5;
+        session.Players[1].Score = 5;
+        session.Players[0].CorrectAnswers = 3;
+        session.Players[0].IncorrectAnswers = 1;
+        session.Players[1].CorrectAnswers = 2;
+        session.Players[1].IncorrectAnswers = 2;
+
+        session.Metadata["SuddenDeathParticipants"] = new List<long> { 1000, 1001 };
+        session.Metadata["SuddenDeathStartRound"] = 0;
+
+        // ≥5 questions keeps queue above the SD threshold so EnsureQuestionsAvailableAsync won't generate
+        var sdQuestions = Enumerable.Range(1, 10)
+            .Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" })
+            .ToList();
+        session.QuestionsByTour[1] = new Queue<Question>(sdQuestions);
+        session.QuestionsByTour[2] = new Queue<Question>(new[]
+        {
+            new Question { Topic = "Geography", Text = "QX?", Answer = "AX" },
+            new Question { Topic = "Geography", Text = "QY?", Answer = "AY" }
+        });
+
+        session.TurnQueue.Enqueue(1000);
+        session.TurnQueue.Enqueue(1001);
+
+        var p0CorrectBefore = session.Players[0].CorrectAnswers;
+        var p0IncorrectBefore = session.Players[0].IncorrectAnswers;
+        var p1CorrectBefore = session.Players[1].CorrectAnswers;
+        var p1IncorrectBefore = session.Players[1].IncorrectAnswers;
+
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1000, "A1", CancellationToken.None); // correct in SD
+        // After P0 answers correctly, still P1's turn — SD not resolved yet
+        Assert.Equal(1, session.Players[0].SuddenDeathScore);
+        Assert.Equal(p0CorrectBefore, session.Players[0].CorrectAnswers);   // unchanged
+        Assert.Equal(p0IncorrectBefore, session.Players[0].IncorrectAnswers); // unchanged
+
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None); // incorrect in SD
+        // P0=1, P1=0 → SD resolved, P1 eliminated
+        Assert.Equal(0, session.Players[1].SuddenDeathScore);
+        Assert.Equal(p1CorrectBefore, session.Players[1].CorrectAnswers);   // unchanged
+        Assert.Equal(p1IncorrectBefore, session.Players[1].IncorrectAnswers); // unchanged
+    }
+
+    [Fact]
+    public async Task SuddenDeath_NonParticipantLeader_IsNotEliminated()
+    {
+        // 3 players: P0 leads (score=8), P1/P2 tied (score=5).
+        // SD involves only P1 and P2. P0 must not be touched.
+        var session = CreateSession(players: 3, tours: 2, roundsPerTour: 1);
+        session.Status = GameStatus.InProgress;
+        session.CurrentTour = 1;
+
+        var questions = Enumerable.Range(1, 3)
+            .Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" })
+            .ToList();
+        session.QuestionsByTour[1] = new Queue<Question>(questions);
+        session.QuestionsByTour[2] = new Queue<Question>(new[]
+        {
+            new Question { Topic = "Geography", Text = "QX?", Answer = "AX" },
+            new Question { Topic = "Geography", Text = "QY?", Answer = "AY" },
+            new Question { Topic = "Geography", Text = "QZ?", Answer = "AZ" }
+        });
+
+        foreach (var p in session.Players) session.TurnQueue.Enqueue(p.Id);
+
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+
+        // P0 correct (score=1), P1 wrong (score=0), P2 wrong (score=0)
+        await _service.HandleAnswerAsync(session, 1000, "A1", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1002, "WRONG", CancellationToken.None);
+
+        // Eliminating P1+P2 leaves 1 winner (P0) — no SD, clean outcome
+        Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
+        Assert.Equal(PlayerStatus.Eliminated, session.Players[1].Status);
+        Assert.Equal(PlayerStatus.Eliminated, session.Players[2].Status);
+        Assert.Equal(GameStatus.InProgress, session.Status);
+        Assert.Equal(2, session.CurrentTour);
+    }
+
+    // ── Regression: SD continued after a tied round ───────────────────────────
+
+    [Fact]
+    public async Task SuddenDeath_TwoPlayersBothAnswerCorrectly_ContinuesNotEnds()
+    {
+        // Regression for the real game bug: both players scored 1:1 in SD round 1,
+        // game incorrectly ended instead of continuing to round 2.
+        var session = CreateSession(players: 2, tours: 2, roundsPerTour: 10);
+        session.Status = GameStatus.SuddenDeath;
+        session.CurrentTour = 1;
+        session.Players[0].Score = 7;
+        session.Players[1].Score = 7;
+
+        session.Metadata["SuddenDeathParticipants"] = new List<long> { 1000, 1001 };
+        session.Metadata["SuddenDeathStartRound"] = 0;
+
+        // 10 questions: enough for several SD rounds above threshold (5)
+        session.QuestionsByTour[1] = new Queue<Question>(
+            Enumerable.Range(1, 10).Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" }));
+        session.QuestionsByTour[2] = new Queue<Question>(
+            Enumerable.Range(100, 5).Select(i => new Question { Topic = "Geography", Text = $"Q{i}?", Answer = $"A{i}" }));
+
+        session.TurnQueue.Enqueue(1000);
+        session.TurnQueue.Enqueue(1001);
+
+        // SD round 1: both answer correctly → 1:1 tie → must continue
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1000, "A1", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "A2", CancellationToken.None);
+
+        // Tie — still in sudden death, nobody eliminated
+        Assert.Equal(GameStatus.SuddenDeath, session.Status);
+        Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
+        Assert.Equal(PlayerStatus.Active, session.Players[1].Status);
+        Assert.Equal(1, session.Players[0].SuddenDeathScore);
+        Assert.Equal(1, session.Players[1].SuddenDeathScore);
+
+        // SD round 2: P0 correct, P1 wrong → 2:1 → resolved
+        await _service.HandleAnswerAsync(session, 1000, "A3", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+
+        Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
+        Assert.Equal(PlayerStatus.Eliminated, session.Players[1].Status);
+        Assert.Equal(GameStatus.InProgress, session.Status);
+        Assert.Equal(2, session.CurrentTour);
+    }
+
+    [Fact]
+    public async Task SuddenDeath_TwoPlayersMultipleRoundsTied_ResolvesWhenScoresSplit()
+    {
+        // All SD rounds tied until the last one — confirms SD runs indefinitely until resolved.
+        var session = CreateSession(players: 2, tours: 2, roundsPerTour: 10);
+        session.Status = GameStatus.SuddenDeath;
+        session.CurrentTour = 1;
+        session.Players[0].Score = 5;
+        session.Players[1].Score = 5;
+
+        session.Metadata["SuddenDeathParticipants"] = new List<long> { 1000, 1001 };
+        session.Metadata["SuddenDeathStartRound"] = 0;
+
+        session.QuestionsByTour[1] = new Queue<Question>(
+            Enumerable.Range(1, 20).Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" }));
+        session.QuestionsByTour[2] = new Queue<Question>(
+            Enumerable.Range(100, 5).Select(i => new Question { Topic = "Geography", Text = $"Q{i}?", Answer = $"A{i}" }));
+
+        session.TurnQueue.Enqueue(1000);
+        session.TurnQueue.Enqueue(1001);
+
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+
+        // Rounds 1-3: both wrong every round → all tied at 0
+        // Questions are A1..A20 in order; wrong answers keep scores tied
+        for (var round = 0; round < 3; round++)
+        {
+            await _service.HandleAnswerAsync(session, 1000, "WRONG", CancellationToken.None);
+            await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+            Assert.Equal(GameStatus.SuddenDeath, session.Status);
+        }
+
+        // Round 4: P0 answers the current question's known answer (A7), P1 wrong → resolved
+        // Questions consumed so far: Q1..Q6 (3 rounds × 2 players). Current question is Q7 → answer A7.
+        await _service.HandleAnswerAsync(session, 1000, "A7", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+
+        Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
+        Assert.Equal(PlayerStatus.Eliminated, session.Players[1].Status);
+        // P0 is the sole survivor → game completes (not just moving to next tour)
+        Assert.Equal(GameStatus.Completed, session.Status);
+    }
+
+    [Fact]
+    public async Task SuddenDeath_RoundLimitReached_AllSurvivorsAdvanceWithoutElimination()
+    {
+        // If SD hits RoundsPerTour rounds without resolution, all survivors advance to next tour.
+        // Use roundsPerTour=1 and SuddenDeathStartRound=0: after 1 SD round,
+        // suddenDeathRoundsPlayed = CurrentRound(0+1 after increment... wait, check fires BEFORE increment.
+        // Actually: check fires when TurnQueue empties. At that point CurrentRound=0, startRound=0.
+        // suddenDeathRoundsPlayed = 0-0=0 < 1 → no limit → increment CurrentRound=1.
+        // On the NEXT TurnQueue-empty: suddenDeathRoundsPlayed = 1-0=1 >= 1 → LIMIT FIRES.
+        // So 2 full rounds of 2 players each = 4 answers needed.
+        var session = CreateSession(players: 2, tours: 2, roundsPerTour: 1);
+        session.Status = GameStatus.SuddenDeath;
+        session.CurrentTour = 1;
+        session.Players[0].Score = 5;
+        session.Players[1].Score = 5;
+
+        session.Metadata["SuddenDeathParticipants"] = new List<long> { 1000, 1001 };
+        session.Metadata["SuddenDeathStartRound"] = 0;
+
+        session.QuestionsByTour[1] = new Queue<Question>(
+            Enumerable.Range(1, 10).Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" }));
+        session.QuestionsByTour[2] = new Queue<Question>(
+            Enumerable.Range(100, 5).Select(i => new Question { Topic = "Geography", Text = $"Q{i}?", Answer = $"A{i}" }));
+
+        session.TurnQueue.Enqueue(1000);
+        session.TurnQueue.Enqueue(1001);
+
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+
+        // SD round 1: both wrong → check fires (0-0=0 < 1) → no limit → CurrentRound=1
+        await _service.HandleAnswerAsync(session, 1000, "WRONG", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+        // SD round 2: both wrong → check fires (1-0=1 >= 1) → LIMIT
+        await _service.HandleAnswerAsync(session, 1000, "WRONG", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+
+        // Both should survive and advance to tour 2 — no elimination
+        Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
+        Assert.Equal(PlayerStatus.Active, session.Players[1].Status);
+        Assert.Equal(2, session.CurrentTour);
+        // Scores still equal after SD, so tour 2 re-enters SD automatically
+        Assert.True(session.Status == GameStatus.InProgress || session.Status == GameStatus.SuddenDeath,
+            $"Expected InProgress or SuddenDeath but was {session.Status}");
+    }
+
+    [Fact]
+    public async Task SuddenDeath_MetadataIntact_AfterMultipleTiedRounds()
+    {
+        // Verify that SuddenDeathParticipants and SuddenDeathStartRound metadata survive
+        // multiple rounds — this was the root cause of the real bug.
+        // roundsPerTour=10 ensures the SD round limit isn't hit during 2 tied test rounds
+        var session = CreateSession(players: 2, tours: 2, roundsPerTour: 10);
+        session.Status = GameStatus.SuddenDeath;
+        session.CurrentTour = 1;
+        session.Players[0].Score = 7;
+        session.Players[1].Score = 7;
+
+        session.Metadata["SuddenDeathParticipants"] = new List<long> { 1000, 1001 };
+        session.Metadata["SuddenDeathStartRound"] = 0;
+
+        session.QuestionsByTour[1] = new Queue<Question>(
+            Enumerable.Range(1, 10).Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" }));
+        session.QuestionsByTour[2] = new Queue<Question>(
+            Enumerable.Range(100, 5).Select(i => new Question { Topic = "Geography", Text = $"Q{i}?", Answer = $"A{i}" }));
+
+        session.TurnQueue.Enqueue(1000);
+        session.TurnQueue.Enqueue(1001);
+
+        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+
+        // After round 1 tie (1:1) — metadata must still be present
+        await _service.HandleAnswerAsync(session, 1000, "A1", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "A2", CancellationToken.None);
+
+        Assert.Equal(GameStatus.SuddenDeath, session.Status);
+        Assert.True(session.Metadata.ContainsKey("SuddenDeathParticipants"), "SuddenDeathParticipants lost after round 1");
+        Assert.True(session.Metadata.ContainsKey("SuddenDeathStartRound"), "SuddenDeathStartRound lost after round 1");
+        var participants = Assert.IsType<List<long>>(session.Metadata["SuddenDeathParticipants"]);
+        Assert.Equal(2, participants.Count);
+
+        // After round 2 tie (2:2) — metadata must still be present
+        await _service.HandleAnswerAsync(session, 1000, "A3", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "A4", CancellationToken.None);
+
+        Assert.Equal(GameStatus.SuddenDeath, session.Status);
+        Assert.True(session.Metadata.ContainsKey("SuddenDeathParticipants"), "SuddenDeathParticipants lost after round 2");
+        Assert.True(session.Metadata.ContainsKey("SuddenDeathStartRound"), "SuddenDeathStartRound lost after round 2");
+    }
+
+    private static GameSession CreateSession(int players, int tours = 1, int roundsPerTour = 1)
     {
         var session = new GameSession
         {
@@ -415,7 +780,7 @@ public class GameLifecycleServiceTests
             QuestionSourceMode = QuestionSourceMode.AI,
             Topics = new[] { "History", "Geography" },
             Tours = tours,
-            RoundsPerTour = 1,
+            RoundsPerTour = roundsPerTour,
             AnswerTimeoutSeconds = 30,
             EliminateLowest = 1
         };

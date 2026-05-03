@@ -88,7 +88,7 @@ public class ScheduledGameServiceTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_WhenStartedAfterScheduledTime_MarksAsProcessed()
+    public async Task ExecuteAsync_WhenStartedAfterScheduledTime_DoesNotInitializeNewGame()
     {
         // Arrange: Current time is 3 PM, scheduled time is 12 PM (already passed)
         var now = DateTime.UtcNow;
@@ -100,16 +100,21 @@ public class ScheduledGameServiceTests
             ScheduledGameTimeUtc = scheduledTime
         };
 
+        // LoadAsync returns null — no existing session, so auto-start check is a no-op
+        _repository.Setup(r => r.LoadAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((GameSession?)null);
+
         var service = CreateService(Options.Create(options));
 
         // Act
         var cts = new CancellationTokenSource();
         var executeTask = service.StartAsync(cts.Token);
-        await Task.Delay(500); // Give it time to initialize
+        await Task.Delay(500); // Give it time to run the first check loop
         cts.Cancel();
 
-        // Assert - Should NOT trigger game initialization since scheduled time has passed
-        _repository.Verify(r => r.LoadAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        // Assert: InitializeScheduledGameAsync was NOT called (no SaveAsync, no game start message)
+        // LoadAsync may be called by CheckAutoStartTimersAsync — that's fine and expected.
+        _repository.Verify(r => r.SaveAsync(It.IsAny<GameSession>(), It.IsAny<CancellationToken>()), Times.Never);
         _messenger.Verify(m => m.SendAsync(It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 

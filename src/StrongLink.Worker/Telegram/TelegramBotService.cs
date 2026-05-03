@@ -93,8 +93,7 @@ public sealed class TelegramBotService : IBotLifetimeService
 
         if (isTransientError)
         {
-            // Log transient errors at a lower level to avoid log spam
-            _logger.LogWarning(exception, "Transient connection error occurred. The bot will automatically retry.");
+            _logger.LogDebug(exception, "Transient connection error occurred. The bot will automatically retry.");
         }
         else
         {
