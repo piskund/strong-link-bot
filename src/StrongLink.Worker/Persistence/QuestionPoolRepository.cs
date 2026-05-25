@@ -10,6 +10,7 @@ public interface IQuestionPoolRepository
     Task<List<Question>> GetUnusedQuestionsAsync(CancellationToken cancellationToken = default);
     Task<List<Question>> GetArchivedQuestionsAsync(CancellationToken cancellationToken = default);
     Task<List<Question>> GetArchivedQuestionsByTopicAsync(string topic, int maxMonthsBack = 1, CancellationToken cancellationToken = default);
+    Task<List<Question>> GetArchivedQuestionsByTopicAllTimeAsync(string topic, CancellationToken cancellationToken = default);
     Task AddToUnusedPoolAsync(IEnumerable<Question> questions, CancellationToken cancellationToken = default);
     Task MoveToArchiveAsync(IEnumerable<Question> questions, CancellationToken cancellationToken = default);
     Task<(int Unused, int Archived)> GetPoolStatsAsync(CancellationToken cancellationToken = default);
@@ -166,6 +167,48 @@ public sealed class QuestionPoolRepository : IQuestionPoolRepository
         }
     }
 
+    public async Task<List<Question>> GetArchivedQuestionsByTopicAllTimeAsync(
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        await _lock.WaitAsync(cancellationToken);
+        try
+        {
+            var sanitizedTopic = SanitizeTopicName(topic);
+            var allQuestions = new List<Question>();
+
+            if (!Directory.Exists(_archivedPath))
+            {
+                return allQuestions;
+            }
+
+            var monthFolders = Directory.GetDirectories(_archivedPath)
+                .OrderBy(d => d)
+                .ToArray();
+
+            foreach (var monthFolder in monthFolders)
+            {
+                var topicFile = Path.Combine(monthFolder, $"{sanitizedTopic}.json");
+                if (File.Exists(topicFile))
+                {
+                    var questions = await LoadQuestionsFromFileAsync(topicFile, cancellationToken);
+                    allQuestions.AddRange(questions);
+                    _logger.LogDebug("Loaded {Count} questions from {Month}/{Topic}",
+                        questions.Count, Path.GetFileName(monthFolder), sanitizedTopic);
+                }
+            }
+
+            _logger.LogInformation("Loaded {Count} archived questions (all time) for topic '{Topic}' from {FolderCount} month folders",
+                allQuestions.Count, topic, monthFolders.Length);
+
+            return allQuestions;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public async Task AddToUnusedPoolAsync(IEnumerable<Question> questions, CancellationToken cancellationToken = default)
     {
         await _lock.WaitAsync(cancellationToken);
@@ -196,19 +239,40 @@ public sealed class QuestionPoolRepository : IQuestionPoolRepository
                     existing.Select(q => NormalizeText(q.Text)),
                     StringComparer.OrdinalIgnoreCase);
 
+                var existingAnswers = new HashSet<string>(
+                    existing.Select(q => NormalizeText(q.Answer)),
+                    StringComparer.OrdinalIgnoreCase);
+
                 var toAdd = topicGroup
-                    .Where(q => !existingTexts.Contains(NormalizeText(q.Text)))
+                    .Where(q => !existingTexts.Contains(NormalizeText(q.Text))
+                             && !existingAnswers.Contains(NormalizeText(q.Answer)))
                     .ToList();
 
-                if (toAdd.Count > 0)
+                // Also dedup within the incoming batch itself (same answer, different wording)
+                var deduped = new List<Question>();
+                var seenAnswers = new HashSet<string>(existingAnswers, StringComparer.OrdinalIgnoreCase);
+                var seenTexts = new HashSet<string>(existingTexts, StringComparer.OrdinalIgnoreCase);
+                foreach (var q in toAdd)
                 {
-                    existing.AddRange(toAdd);
-                    await SaveQuestionsToFileAsync(topicFile, existing, cancellationToken);
-                    addedCount += toAdd.Count;
-                    _logger.LogDebug("Added {Count} questions to topic '{Topic}'", toAdd.Count, topic);
+                    var answerKey = NormalizeText(q.Answer);
+                    var textKey = NormalizeText(q.Text);
+                    if (!seenAnswers.Contains(answerKey) && !seenTexts.Contains(textKey))
+                    {
+                        deduped.Add(q);
+                        seenAnswers.Add(answerKey);
+                        seenTexts.Add(textKey);
+                    }
                 }
 
-                duplicateCount += topicGroup.Count() - toAdd.Count;
+                if (deduped.Count > 0)
+                {
+                    existing.AddRange(deduped);
+                    await SaveQuestionsToFileAsync(topicFile, existing, cancellationToken);
+                    addedCount += deduped.Count;
+                    _logger.LogDebug("Added {Count} questions to topic '{Topic}'", deduped.Count, topic);
+                }
+
+                duplicateCount += topicGroup.Count() - deduped.Count;
             }
 
             _logger.LogInformation("Added {Added} new questions to unused pool across {Topics} topics (skipped {Duplicates} duplicates)",

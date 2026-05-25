@@ -188,36 +188,38 @@ public sealed class ScheduledGameService : BackgroundService
 
         await _messenger.SendAsync(chatId, message, cancellationToken);
 
-        // Prepare questions immediately in the background during the wait period
-        // This allows the game to start instantly when the timer expires
+        // Kick off question preparation in the background so the scheduler loop
+        // continues running and can fire auto-start on time regardless of how
+        // long AI generation takes.
         _logger.LogInformation("Starting background question preparation for scheduled game in chat {ChatId}", chatId);
 
-        try
+        _ = Task.Run(async () =>
         {
-            await PrepareQuestionsForGameAsync(session, cancellationToken);
-            _logger.LogInformation("Questions prepared successfully for scheduled game in chat {ChatId}", chatId);
+            try
+            {
+                await PrepareQuestionsForGameAsync(session, cancellationToken);
+                _logger.LogInformation("Questions prepared successfully for scheduled game in chat {ChatId}", chatId);
 
-            // Notify chat that questions are ready
-            var readyMessage = session.Language == GameLanguage.Russian
-                ? "✅ Вопросы готовы! Ожидаем игроков..."
-                : "✅ Questions ready! Waiting for players...";
+                var readyMessage = session.Language == GameLanguage.Russian
+                    ? "✅ Вопросы готовы! Ожидаем игроков..."
+                    : "✅ Questions ready! Waiting for players...";
 
-            await _messenger.SendAsync(chatId, readyMessage, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to prepare questions for scheduled game in chat {ChatId}. Will retry on auto-start.", chatId);
+                await _messenger.SendAsync(chatId, readyMessage, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to prepare questions for scheduled game in chat {ChatId}. Will retry on auto-start.", chatId);
 
-            // Mark that question preparation failed, so we can retry on auto-start
-            session.Metadata["QuestionPreparationFailed"] = true;
-            await _repository.SaveAsync(session, cancellationToken);
+                session.Metadata["QuestionPreparationFailed"] = true;
+                await _repository.SaveAsync(session, cancellationToken);
 
-            var errorMessage = session.Language == GameLanguage.Russian
-                ? "⚠️ Не удалось подготовить вопросы сейчас. Повторю попытку при старте игры."
-                : "⚠️ Failed to prepare questions now. Will retry when the game starts.";
+                var errorMessage = session.Language == GameLanguage.Russian
+                    ? "⚠️ Не удалось подготовить вопросы сейчас. Повторю попытку при старте игры."
+                    : "⚠️ Failed to prepare questions now. Will retry when the game starts.";
 
-            await _messenger.SendAsync(chatId, errorMessage, cancellationToken);
-        }
+                await _messenger.SendAsync(chatId, errorMessage, cancellationToken);
+            }
+        }, cancellationToken);
     }
 
     private async Task CheckAutoStartTimersAsync(CancellationToken cancellationToken)

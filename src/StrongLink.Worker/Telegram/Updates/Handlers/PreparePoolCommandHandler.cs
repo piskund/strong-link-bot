@@ -86,10 +86,6 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
                 return;
             }
 
-            // Get archived questions to avoid repetition when generating new ones
-            var archivedQuestions = await _poolRepository.GetArchivedQuestionsAsync(cancellationToken);
-            _logger.LogInformation("Retrieved {Count} archived questions for AI context", archivedQuestions.Count);
-
             // Generate only 1 tour ahead with probability-based topic selection
             var preparing = Localization.GetString(session.Language, "Bot.PoolPreparing");
             await Client.SendTextMessageAsync(chatId, preparing, cancellationToken: cancellationToken);
@@ -99,6 +95,10 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
                 session.Topics,
                 _gameOptions.TopicSelectionProbability);
             var isRandomTopic = string.IsNullOrEmpty(selectedTopic);
+
+            // Get archived questions for this topic (all time) to avoid repetition when generating
+            var archivedQuestions = await _poolRepository.GetArchivedQuestionsByTopicAllTimeAsync(selectedTopic, cancellationToken);
+            _logger.LogInformation("Retrieved {Count} archived questions for topic '{Topic}' AI context", archivedQuestions.Count, selectedTopic);
             var topicDisplay = isRandomTopic
                 ? (session.Language == GameLanguage.Russian ? "случайная тема" : "random topic")
                 : selectedTopic;
@@ -122,11 +122,11 @@ public sealed class PreparePoolCommandHandler : CommandHandlerBase
                 generated = await aiProvider.PrepareQuestionPoolAsync(
                     new[] { selectedTopic },
                     1,
-                    requiredPerTour, // Generate enough for one full tour
+                    requiredPerTour,
                     session.Players,
                     session.Language,
                     session.MatureContent,
-                    archivedQuestions,
+                    archivedQuestions.TakeLast(100).ToList(),
                     cancellationToken);
             }
             else

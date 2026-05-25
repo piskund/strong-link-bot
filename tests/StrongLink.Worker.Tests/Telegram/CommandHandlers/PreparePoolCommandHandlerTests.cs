@@ -55,6 +55,7 @@ public class PreparePoolCommandHandlerTests
             .ReturnsAsync(new Message());
 
         var botOptions = Microsoft.Extensions.Options.Options.Create(new StrongLink.Worker.Configuration.BotOptions());
+        var gameOptions = Microsoft.Extensions.Options.Options.Create(new StrongLink.Worker.Configuration.GameOptions());
         _handler = new PreparePoolCommandHandler(
             _client.Object,
             _localization,
@@ -62,7 +63,8 @@ public class PreparePoolCommandHandlerTests
             _factory,
             _poolRepository.Object,
             NullLogger<PreparePoolCommandHandler>.Instance,
-            botOptions);
+            botOptions,
+            gameOptions);
     }
 
     [Fact]
@@ -95,7 +97,7 @@ public class PreparePoolCommandHandlerTests
         _poolRepository.Setup(p => p.GetPoolStatsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync((0, 0));
 
-        _poolRepository.Setup(p => p.GetArchivedQuestionsAsync(It.IsAny<CancellationToken>()))
+        _poolRepository.Setup(p => p.GetArchivedQuestionsByTopicAllTimeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<Question>());
 
         _poolRepository.Setup(p => p.SelectQuestionsAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
@@ -127,7 +129,8 @@ public class PreparePoolCommandHandlerTests
         // Assert
         Assert.NotNull(savedSession);
         Assert.Equal(GameStatus.ReadyToStart, savedSession.Status);
-        Assert.NotEmpty(savedSession.QuestionsByTour);
+        // Questions go into the unused pool, not into session.QuestionsByTour
+        _poolRepository.Verify(p => p.AddToUnusedPoolAsync(It.IsAny<IEnumerable<Question>>(), It.IsAny<CancellationToken>()), Times.Once);
         _repository.Verify(r => r.SaveAsync(It.IsAny<GameSession>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -145,7 +148,7 @@ public class PreparePoolCommandHandlerTests
         _poolRepository.Setup(p => p.GetPoolStatsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync((0, 0));
 
-        _poolRepository.Setup(p => p.GetArchivedQuestionsAsync(It.IsAny<CancellationToken>()))
+        _poolRepository.Setup(p => p.GetArchivedQuestionsByTopicAllTimeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<Question>());
 
         _poolRepository.Setup(p => p.SelectQuestionsAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
@@ -177,15 +180,17 @@ public class PreparePoolCommandHandlerTests
         // Assert
         Assert.NotNull(savedSession);
         Assert.Equal(GameStatus.ReadyToStart, savedSession.Status);
-        Assert.NotEmpty(savedSession.QuestionsByTour);
-        Assert.True(_sentMessages.Count >= 2, $"Expected at least 2 messages, but got {_sentMessages.Count}"); // Preparing message + progress messages + Ready message
+        // Questions go into the unused pool, not into session.QuestionsByTour
+        _poolRepository.Verify(p => p.AddToUnusedPoolAsync(It.IsAny<IEnumerable<Question>>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.True(_sentMessages.Count >= 2, $"Expected at least 2 messages, but got {_sentMessages.Count}");
         _repository.Verify(r => r.SaveAsync(It.IsAny<GameSession>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task HandleAsync_ReusesQuestionsFromPool_WhenAvailable()
+    public async Task HandleAsync_SkipsGeneration_WhenPoolAlreadyHasEnoughQuestions()
     {
-        // Arrange
+        // /prepare_pool early-exits with ReadyToStart when pool has >= requiredPerTour questions.
+        // 1 player → effective 3 players → 3 × 3 rounds = 9 required. Pool reports 10 unused.
         var update = CreateUpdate();
         var session = CreateSession(12345);
         session.Players.Add(new Player { Id = 1, DisplayName = "Player1", Status = PlayerStatus.Active });
@@ -194,52 +199,24 @@ public class PreparePoolCommandHandlerTests
             .ReturnsAsync(session);
 
         _poolRepository.Setup(p => p.GetPoolStatsAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync((10, 5)); // 10 unused, 5 archived
-
-        _poolRepository.Setup(p => p.GetArchivedQuestionsAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<Question>());
-
-        // With 1 player, effective count is 3 (minimum), so 3 * 3 rounds = 9 questions needed
-        var poolQuestions = new List<Question>
-        {
-            new Question { Topic = "General", Text = "Q1?", Answer = "A1" },
-            new Question { Topic = "General", Text = "Q2?", Answer = "A2" },
-            new Question { Topic = "General", Text = "Q3?", Answer = "A3" },
-            new Question { Topic = "General", Text = "Q4?", Answer = "A4" },
-            new Question { Topic = "General", Text = "Q5?", Answer = "A5" },
-            new Question { Topic = "General", Text = "Q6?", Answer = "A6" },
-            new Question { Topic = "General", Text = "Q7?", Answer = "A7" },
-            new Question { Topic = "General", Text = "Q8?", Answer = "A8" },
-            new Question { Topic = "General", Text = "Q9?", Answer = "A9" }
-        };
-
-        _poolRepository.Setup(p => p.SelectQuestionsAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(poolQuestions);
+            .ReturnsAsync((10, 5)); // 10 unused ≥ 9 required → skip generation
 
         GameSession? savedSession = null;
         _repository.Setup(r => r.SaveAsync(It.IsAny<GameSession>(), It.IsAny<CancellationToken>()))
             .Callback<GameSession, CancellationToken>((s, _) => savedSession = s)
             .Returns(Task.CompletedTask);
 
-        // Act
         await _handler.HandleAsync(update, CancellationToken.None);
 
-        // Assert
         Assert.NotNull(savedSession);
         Assert.Equal(GameStatus.ReadyToStart, savedSession.Status);
-
-        // Should NOT generate new questions when enough in pool
+        // No generation and no SelectQuestionsAsync — pool is consumed lazily during gameplay
         _questionProvider.Verify(p => p.PrepareQuestionPoolAsync(
-            It.IsAny<IReadOnlyList<string>>(),
-            It.IsAny<int>(),
-            It.IsAny<int>(),
-            It.IsAny<IReadOnlyList<Player>>(),
-            It.IsAny<GameLanguage>(),
-            It.IsAny<bool>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<int>(), It.IsAny<int>(),
+            It.IsAny<IReadOnlyList<Player>>(), It.IsAny<GameLanguage>(), It.IsAny<bool>(),
             It.IsAny<CancellationToken>()), Times.Never);
-
-        // Should reuse from pool
-        _poolRepository.Verify(p => p.SelectQuestionsAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
+        _poolRepository.Verify(p => p.SelectQuestionsAsync(
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -256,7 +233,7 @@ public class PreparePoolCommandHandlerTests
         _poolRepository.Setup(p => p.GetPoolStatsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync((1, 0)); // Only 1 question in pool, need 9 (3 players * 3 rounds)
 
-        _poolRepository.Setup(p => p.GetArchivedQuestionsAsync(It.IsAny<CancellationToken>()))
+        _poolRepository.Setup(p => p.GetArchivedQuestionsByTopicAllTimeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<Question>());
 
         var poolQuestions = new List<Question>

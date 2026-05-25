@@ -26,96 +26,61 @@ public sealed class SuddenDeathService : ISuddenDeathService
             return new SuddenDeathDecision { IsNeeded = false, Reason = "Not enough players" };
         }
 
-        // Check if we can safely eliminate players tied for lowest score
-        if (activePlayers.Count > 1)
+        var minScore = activePlayers.Min(p => p.Score);
+        var tiedForLowest = activePlayers.Where(p => p.Score == minScore).ToList();
+        var remainingAfterElimination = activePlayers.Count - tiedForLowest.Count;
+
+        _logger.LogInformation("End-of-tour: {Total} active players, tied for lowest ({MinScore}): {TiedCount}, would leave: {Remaining}",
+            activePlayers.Count, minScore, tiedForLowest.Count, remainingAfterElimination);
+
+        // All players tied — no one can be eliminated without sudden death
+        if (remainingAfterElimination == 0)
         {
-            var minScore = activePlayers.Min(p => p.Score);
-            var tiedForLowest = activePlayers
-                .Where(p => p.Score == minScore)
-                .ToList();
-
-            var remainingAfterElimination = activePlayers.Count - tiedForLowest.Count;
-
-            _logger.LogInformation("Tied for lowest score ({MinScore}): {Count} player(s). Would leave: {Remaining}",
-                minScore, tiedForLowest.Count, remainingAfterElimination);
-
-            if (remainingAfterElimination >= 3)
+            _logger.LogInformation("All {Count} players tied — sudden death needed", activePlayers.Count);
+            return new SuddenDeathDecision
             {
-                // Safe to eliminate - no sudden death needed
-                _logger.LogDebug("Safe to eliminate {Count} player(s) tied for lowest score without sudden death",
-                    tiedForLowest.Count);
-                return new SuddenDeathDecision
-                {
-                    IsNeeded = false,
-                    Reason = $"Can safely eliminate {tiedForLowest.Count} player(s)"
-                };
-            }
-
-            if (remainingAfterElimination == 1)
-            {
-                // Exactly one player has a higher score - they win outright, no sudden death needed
-                _logger.LogInformation("Elimination of {Count} tied players leaves exactly 1 winner. No sudden death needed.",
-                    tiedForLowest.Count);
-                return new SuddenDeathDecision
-                {
-                    IsNeeded = false,
-                    Reason = "Single winner after eliminating all tied-for-lowest players"
-                };
-            }
-
-            if (remainingAfterElimination == 2)
-            {
-                // Would leave exactly 2 players
-                _logger.LogInformation("Elimination would leave 2 players. Checking for sudden death need.");
-
-                if (tiedForLowest.Count > 1)
-                {
-                    // Multiple players tied for lowest - need sudden death to decide who gets eliminated
-                    _logger.LogInformation("Sudden death needed: {Count} players tied for lowest score",
-                        tiedForLowest.Count);
-
-                    return new SuddenDeathDecision
-                    {
-                        IsNeeded = true,
-                        Participants = tiedForLowest,
-                        Reason = $"{tiedForLowest.Count} players tied for lowest score"
-                    };
-                }
-                else
-                {
-                    // Only one player with lowest score - no sudden death needed
-                    _logger.LogDebug("Only one player with lowest score - no sudden death needed");
-                    return new SuddenDeathDecision
-                    {
-                        IsNeeded = false,
-                        Reason = "Single player with lowest score"
-                    };
-                }
-            }
+                IsNeeded = true,
+                Participants = tiedForLowest,
+                Reason = $"All {activePlayers.Count} players tied"
+            };
         }
 
-        // Check if we have 3 or fewer active players with ties
-        activePlayers = session.ActivePlayers.ToList();
-        if (activePlayers.Count <= 3 && activePlayers.Count > 1)
+        // Exactly one player has a higher score — clear winner/survivor, eliminate the rest
+        if (remainingAfterElimination == 1)
         {
-            var tiedGroups = activePlayers.GroupBy(p => p.Score).Where(g => g.Count() > 1).ToList();
-            if (tiedGroups.Any())
-            {
-                // Have ties among final 3 or fewer - need sudden death
-                var tiedPlayers = tiedGroups.SelectMany(g => g).ToList();
-                _logger.LogInformation("Final {Count} players have ties. Sudden death needed for {TiedCount} tied players.",
-                    activePlayers.Count, tiedPlayers.Count);
-
-                return new SuddenDeathDecision
-                {
-                    IsNeeded = true,
-                    Participants = tiedPlayers,
-                    Reason = $"Ties among final {activePlayers.Count} players"
-                };
-            }
+            _logger.LogInformation("One player above minimum score. Eliminating {Count} tied-for-lowest. No sudden death needed.", tiedForLowest.Count);
+            return new SuddenDeathDecision { IsNeeded = false, Reason = "Single player above minimum" };
         }
 
-        return new SuddenDeathDecision { IsNeeded = false, Reason = "No ties to resolve" };
+        // Would leave ≥2 players after elimination:
+        // If only one player has the lowest score, eliminate them cleanly.
+        // If multiple share the lowest, we need sudden death to decide which one to drop
+        // — but only if we'd otherwise drop below the viable player count (≥2 remaining).
+        if (tiedForLowest.Count == 1)
+        {
+            _logger.LogDebug("Single player with lowest score — clean elimination, no sudden death needed");
+            return new SuddenDeathDecision { IsNeeded = false, Reason = "Single player with lowest score" };
+        }
+
+        // Multiple players tied for lowest. If safe to eliminate all of them (≥3 would remain), do so.
+        if (remainingAfterElimination >= 3)
+        {
+            _logger.LogDebug("Safe to eliminate all {Count} tied-for-lowest players ({Remaining} remain)", tiedForLowest.Count, remainingAfterElimination);
+            return new SuddenDeathDecision { IsNeeded = false, Reason = $"Safe to eliminate {tiedForLowest.Count} tied players" };
+        }
+
+        // remainingAfterElimination == 2 and tiedForLowest.Count > 1:
+        // Eliminating all tied-lowest players would leave exactly 2, which is fine for continuing.
+        // However we still need to pick which of the tied-lowest players actually leaves —
+        // use sudden death only among those tied for last place.
+        _logger.LogInformation("Sudden death needed: {Count} players tied for lowest score, eliminating all would leave {Remaining}",
+            tiedForLowest.Count, remainingAfterElimination);
+        return new SuddenDeathDecision
+        {
+            IsNeeded = true,
+            Participants = tiedForLowest,
+            Reason = $"{tiedForLowest.Count} players tied for lowest score"
+        };
     }
 
     public SuddenDeathResolution CheckIfSuddenDeathResolved(GameSession session)
@@ -126,10 +91,29 @@ public sealed class SuddenDeathService : ISuddenDeathService
             return new SuddenDeathResolution { IsResolved = false };
         }
 
-        if (!session.Metadata.TryGetValue("SuddenDeathParticipants", out var participantsObj) ||
-            participantsObj is not List<long> participantIds)
+        if (!session.Metadata.TryGetValue("SuddenDeathParticipants", out var participantsObj))
         {
             _logger.LogWarning("No sudden death participants found in metadata");
+            return new SuddenDeathResolution { IsResolved = false };
+        }
+
+        List<long> participantIds;
+        if (participantsObj is List<long> directList)
+        {
+            participantIds = directList;
+        }
+        else if (participantsObj is System.Text.Json.JsonElement jsonElement &&
+                 jsonElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            participantIds = new List<long>();
+            foreach (var item in jsonElement.EnumerateArray())
+                participantIds.Add(item.GetInt64());
+            // Write back the deserialized list so future calls don't re-parse
+            session.Metadata["SuddenDeathParticipants"] = participantIds;
+        }
+        else
+        {
+            _logger.LogWarning("SuddenDeathParticipants has unexpected type {Type}", participantsObj?.GetType().Name);
             return new SuddenDeathResolution { IsResolved = false };
         }
 

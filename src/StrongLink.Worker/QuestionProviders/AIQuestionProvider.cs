@@ -101,22 +101,18 @@ public sealed class AiQuestionProvider : IQuestionProvider
             {
                 var topicOrNull = topics.ElementAtOrDefault(tourIndex);
                 var isRandomTopic = string.IsNullOrEmpty(topicOrNull);
-                var topic = isRandomTopic ? "random" : topicOrNull; // Placeholder - AI will generate its own topic when "random"
+                var topic = isRandomTopic ? "random" : topicOrNull;
 
                 var questionsNeeded = Math.Max(1, players.Count) * roundsPerTour;
                 _logger.LogInformation("Requesting {Count} AI questions for topic {Topic} (random: {IsRandom})",
                     questionsNeeded, topic, isRandomTopic);
 
-                var prompt = BuildPrompt(language, topic!, questionsNeeded, matureContent, difficultyLevel, archivedQuestions, isRandomTopic);
-                _logger.LogDebug("Prompt: {Prompt}", prompt);
+                var questionList = await GenerateInChunksAsync(
+                    language, topic!, questionsNeeded, matureContent, difficultyLevel,
+                    archivedQuestions, isRandomTopic, cancellationToken);
 
-                var response = await RequestOpenAiAsync(prompt, cancellationToken);
-                _logger.LogDebug("Received response from OpenAI");
-
-                var parsed = ParseQuestions(response, topic!);
-                var questionList = parsed.ToList();  // Keep ALL parsed questions, not just the needed amount
-                _logger.LogInformation("Parsed {Count} questions from OpenAI response (requested {Needed})",
-                    questionList.Count, questionsNeeded);
+                _logger.LogInformation("Total questions collected for tour {Tour}: {Count} (requested {Needed})",
+                    tourIndex + 1, questionList.Count, questionsNeeded);
 
                 result[tourIndex + 1] = questionList;
             }
@@ -128,6 +124,60 @@ public sealed class AiQuestionProvider : IQuestionProvider
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Generates questions in chunks of at most <see cref="MaxChunkSize"/> per request to avoid
+    /// hitting the HttpClient timeout with large prompts.
+    /// </summary>
+    private async Task<List<Question>> GenerateInChunksAsync(
+        GameLanguage language,
+        string topic,
+        int totalNeeded,
+        bool matureContent,
+        DifficultyLevel difficultyLevel,
+        IReadOnlyList<Question>? archivedQuestions,
+        bool isRandomTopic,
+        CancellationToken cancellationToken)
+    {
+        const int MaxChunkSize = 10;
+
+        var collected = new List<Question>();
+        // Keep a running exclusion set so successive chunks don't repeat each other either.
+        var baseExclusions = archivedQuestions?.TakeLast(200).ToList() ?? new List<Question>();
+
+        var remaining = totalNeeded;
+        while (remaining > 0 && !cancellationToken.IsCancellationRequested)
+        {
+            var chunkSize = Math.Min(remaining, MaxChunkSize);
+
+            // Merge base exclusions with already-collected questions for dedup.
+            var exclusionsForChunk = new List<Question>(baseExclusions);
+            exclusionsForChunk.AddRange(collected);
+
+            var prompt = BuildPrompt(language, topic, chunkSize, matureContent, difficultyLevel,
+                exclusionsForChunk, isRandomTopic);
+            _logger.LogDebug("Chunk prompt (need {ChunkSize} of {Remaining} remaining): {Prompt}", chunkSize, remaining, prompt);
+
+            var response = await RequestOpenAiAsync(prompt, cancellationToken);
+            // Empty topic → SanitizeTopicName returns "General"; avoids "random" leaking into TopicSelector.
+            var topicForStorage = isRandomTopic ? string.Empty : topic;
+            var parsed = ParseQuestions(response, topicForStorage).ToList();
+            _logger.LogInformation("Chunk returned {Count} questions (requested {ChunkSize})", parsed.Count, chunkSize);
+
+            if (parsed.Count == 0)
+            {
+                // OpenAI returned nothing useful — stop to avoid an infinite loop.
+                _logger.LogWarning("Empty chunk response for topic '{Topic}'. Stopping early with {Count}/{Total} questions.",
+                    topic, collected.Count, totalNeeded);
+                break;
+            }
+
+            collected.AddRange(parsed);
+            remaining -= parsed.Count;
+        }
+
+        return collected;
     }
 
     private string BuildPrompt(GameLanguage language, string topic, int questions, bool matureContent, DifficultyLevel difficultyLevel, IReadOnlyList<Question>? archivedQuestions = null, bool isRandomTopic = false)
@@ -146,8 +196,8 @@ public sealed class AiQuestionProvider : IQuestionProvider
             var topicLower = topic.ToLowerInvariant();
             var relevantQuestions = archivedQuestions
                 .Where(q => !string.IsNullOrEmpty(q.Topic) && q.Topic.ToLowerInvariant().Contains(topicLower))
-                .TakeLast(100)  // Increased from 50 to 100 to show more examples
-                .Select(q => $"- {q.Text}")
+                .TakeLast(200)
+                .Select(q => $"- {q.Text} → {q.Answer}")
                 .ToList();
 
             _logger.LogInformation("Found {Count} archived questions for topic '{Topic}' to exclude from generation",
@@ -159,7 +209,7 @@ public sealed class AiQuestionProvider : IQuestionProvider
                 var generalQuestions = archivedQuestions
                     .Where(q => string.IsNullOrEmpty(q.Topic) || !q.Topic.ToLowerInvariant().Contains(topicLower))
                     .TakeLast(30)
-                    .Select(q => $"- {q.Text}")
+                    .Select(q => $"- {q.Text} → {q.Answer}")
                     .ToList();
 
                 _logger.LogInformation("Adding {Count} general archived questions to exclusion list", generalQuestions.Count);
@@ -333,53 +383,89 @@ public sealed class AiQuestionProvider : IQuestionProvider
 
     private async Task<OpenAiResponse> RequestOpenAiAsync(string prompt, CancellationToken cancellationToken)
     {
-        try
+        const int MaxAttempts = 5;
+        var delays = new[] { 15, 30, 60, 120 }; // seconds between retries
+
+        for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, _options.Endpoint);
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
-
-            var body = new OpenAiRequest
+            try
             {
-                Model = _options.Model,
-                Messages =
-                [
-                    new OpenAiMessage("system", "You are a trivia question generator. Create clear, engaging trivia questions suitable for a quiz game. Each question should have a single unambiguous correct answer."),
-                    new OpenAiMessage("user", prompt)
-                ]
-            };
+                using var request = new HttpRequestMessage(HttpMethod.Post, _options.Endpoint);
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
 
-            var json = JsonSerializer.Serialize(body, new JsonSerializerOptions
-            {
-                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-            });
+                var body = new OpenAiRequest
+                {
+                    Model = _options.Model,
+                    Messages =
+                    [
+                        new OpenAiMessage("system", "You are a trivia question generator. Create clear, engaging trivia questions suitable for a quiz game. Each question should have a single unambiguous correct answer."),
+                        new OpenAiMessage("user", prompt)
+                    ]
+                };
 
-            request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                var json = JsonSerializer.Serialize(body, new JsonSerializerOptions
+                {
+                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+                });
 
-            _logger.LogDebug("Sending request to OpenAI: {Endpoint}", _options.Endpoint);
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+                request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger.LogError("OpenAI API returned {StatusCode}: {Error}", response.StatusCode, errorContent);
-                response.EnsureSuccessStatusCode();
+                _logger.LogDebug("Sending request to OpenAI (attempt {Attempt}/{Max}): {Endpoint}", attempt, MaxAttempts, _options.Endpoint);
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests ||
+                    response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+                {
+                    if (attempt == MaxAttempts)
+                    {
+                        var errBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                        _logger.LogError("OpenAI rate limit hit on final attempt. Status: {Status}, Body: {Body}", response.StatusCode, errBody);
+                        response.EnsureSuccessStatusCode();
+                    }
+
+                    // Honour Retry-After header if present, otherwise use exponential backoff
+                    var waitSeconds = delays[attempt - 1];
+                    if (response.Headers.RetryAfter?.Delta is TimeSpan retryDelta)
+                        waitSeconds = Math.Max(waitSeconds, (int)Math.Ceiling(retryDelta.TotalSeconds));
+                    else if (response.Headers.RetryAfter?.Date is DateTimeOffset retryDate)
+                        waitSeconds = Math.Max(waitSeconds, (int)Math.Ceiling((retryDate - DateTimeOffset.UtcNow).TotalSeconds));
+
+                    _logger.LogWarning("OpenAI rate limit (attempt {Attempt}/{Max}). Retrying in {Wait}s...", attempt, MaxAttempts, waitSeconds);
+                    await Task.Delay(TimeSpan.FromSeconds(waitSeconds), cancellationToken);
+                    continue;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                    _logger.LogError("OpenAI API returned {StatusCode}: {Error}", response.StatusCode, errorContent);
+                    response.EnsureSuccessStatusCode();
+                }
+
+                var payload = await JsonSerializer.DeserializeAsync<OpenAiResponse>(
+                    await response.Content.ReadAsStreamAsync(cancellationToken),
+                    cancellationToken: cancellationToken);
+                return payload ?? throw new InvalidOperationException("OpenAI response payload was null");
             }
+            catch (HttpRequestException ex)
+            {
+                if (attempt == MaxAttempts)
+                {
+                    _logger.LogError(ex, "HTTP request to OpenAI failed after {Max} attempts", MaxAttempts);
+                    throw;
+                }
+                var waitSeconds = delays[attempt - 1];
+                _logger.LogWarning(ex, "HTTP request to OpenAI failed (attempt {Attempt}/{Max}). Retrying in {Wait}s...", attempt, MaxAttempts, waitSeconds);
+                await Task.Delay(TimeSpan.FromSeconds(waitSeconds), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to request questions from OpenAI");
+                throw;
+            }
+        }
 
-            var payload = await JsonSerializer.DeserializeAsync<OpenAiResponse>(
-                await response.Content.ReadAsStreamAsync(cancellationToken),
-                cancellationToken: cancellationToken);
-            return payload ?? throw new InvalidOperationException("OpenAI response payload was null");
-        }
-        catch (HttpRequestException ex)
-        {
-            _logger.LogError(ex, "HTTP request to OpenAI failed");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to request questions from OpenAI");
-            throw;
-        }
+        throw new InvalidOperationException("Unreachable: exceeded retry loop without returning or throwing");
     }
 
     private IEnumerable<Question> ParseQuestions(OpenAiResponse response, string topic)

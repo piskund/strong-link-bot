@@ -150,7 +150,10 @@ builder.Services.AddSingleton<IGameLifecycleService, GameLifecycleService>();
 builder.Services.AddSingleton<IBotLifetimeService, TelegramBotService>();
 builder.Services.AddSingleton<UpdateDispatcher>();
 
-builder.Services.AddHttpClient<AiQuestionProvider>();
+builder.Services.AddHttpClient<AiQuestionProvider>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(3);
+});
 builder.Services.AddHttpClient<ChgkQuestionProvider>();
 builder.Services.AddHttpClient<AiAnswerValidator>();
 builder.Services.AddSingleton<IAnswerValidator, AiAnswerValidator>();
@@ -161,6 +164,7 @@ builder.Services.AddSingleton<IQuestionProvider>(sp => sp.GetRequiredService<Chg
 builder.Services.AddTransient<StartCommandHandler>();
 builder.Services.AddTransient<JoinCommandHandler>();
 builder.Services.AddTransient<PreparePoolCommandHandler>();
+builder.Services.AddTransient<GeneratePoolCommandHandler>();
 builder.Services.AddTransient<FetchPoolCommandHandler>();
 builder.Services.AddTransient<HelpCommandHandler>();
 builder.Services.AddTransient<StandingsCommandHandler>();
@@ -168,10 +172,12 @@ builder.Services.AddTransient<StartGameCommandHandler>();
 builder.Services.AddTransient<PauseCommandHandler>();
 builder.Services.AddTransient<ResumeCommandHandler>();
 builder.Services.AddTransient<StopCommandHandler>();
+builder.Services.AddTransient<KickCommandHandler>();
 builder.Services.AddTransient<PoolStatusCommandHandler>();
 builder.Services.AddTransient<PoolClearCommandHandler>();
 builder.Services.AddTransient<ScheduleCommandHandler>();
 builder.Services.AddTransient<TestScheduledCommandHandler>();
+builder.Services.AddTransient<NextRoundCommandHandler>();
 builder.Services.AddTransient<AnswerMessageHandler>();
 
 builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHandler[]
@@ -179,6 +185,7 @@ builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHand
     sp.GetRequiredService<StartCommandHandler>(),
     sp.GetRequiredService<JoinCommandHandler>(),
     sp.GetRequiredService<PreparePoolCommandHandler>(),
+    sp.GetRequiredService<GeneratePoolCommandHandler>(),
     sp.GetRequiredService<FetchPoolCommandHandler>(),
     sp.GetRequiredService<HelpCommandHandler>(),
     sp.GetRequiredService<StandingsCommandHandler>(),
@@ -186,10 +193,12 @@ builder.Services.AddSingleton<IEnumerable<IUpdateHandler>>(sp => new IUpdateHand
     sp.GetRequiredService<PauseCommandHandler>(),
     sp.GetRequiredService<ResumeCommandHandler>(),
     sp.GetRequiredService<StopCommandHandler>(),
+    sp.GetRequiredService<KickCommandHandler>(),
     sp.GetRequiredService<PoolStatusCommandHandler>(),
     sp.GetRequiredService<PoolClearCommandHandler>(),
     sp.GetRequiredService<ScheduleCommandHandler>(),
     sp.GetRequiredService<TestScheduledCommandHandler>(),
+    sp.GetRequiredService<NextRoundCommandHandler>(),
     sp.GetRequiredService<AnswerMessageHandler>()
 });
 

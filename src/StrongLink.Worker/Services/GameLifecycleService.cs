@@ -164,15 +164,25 @@ public sealed class GameLifecycleService : IGameLifecycleService
             {
                 // Get the sudden death starting round from metadata
                 int startRound;
-                if (session.Metadata.TryGetValue("SuddenDeathStartRound", out var startRoundObj) &&
-                    startRoundObj is int parsedStartRound)
+                if (session.Metadata.TryGetValue("SuddenDeathStartRound", out var startRoundObj))
                 {
-                    startRound = parsedStartRound;
+                    if (startRoundObj is int directInt)
+                        startRound = directInt;
+                    else if (startRoundObj is long directLong)
+                        startRound = (int)directLong;
+                    else if (startRoundObj is System.Text.Json.JsonElement je &&
+                             je.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        startRound = je.GetInt32();
+                    else
+                    {
+                        _logger.LogError("SuddenDeathStartRound has unexpected type {Type}. Using fallback.", startRoundObj?.GetType().Name);
+                        startRound = session.CurrentRound;
+                    }
                 }
                 else
                 {
                     _logger.LogError("SuddenDeathStartRound not found in metadata! This should not happen.");
-                    startRound = session.CurrentRound; // Fallback
+                    startRound = session.CurrentRound;
                 }
 
                 var suddenDeathRoundsPlayed = session.CurrentRound - startRound;
@@ -840,7 +850,18 @@ public sealed class GameLifecycleService : IGameLifecycleService
 
         try
         {
-            var topic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1) ?? $"Topic {session.CurrentTour}";
+            // In sudden death the topic list may be exhausted — pick a random configured topic instead
+            // of falling back to the synthetic "Topic N" placeholder.
+            var isSuddenDeath = session.Status == GameStatus.SuddenDeath;
+            var topic = session.Topics.ElementAtOrDefault(session.CurrentTour - 1);
+            if (string.IsNullOrWhiteSpace(topic))
+            {
+                var pool = _gameOptions.Topics.Length > 0 ? _gameOptions.Topics : new[] { "General" };
+                topic = pool[Random.Shared.Next(pool.Length)];
+                _logger.LogInformation("Topic list exhausted for tour {Tour} (sudden death: {IsSd}). Using random topic '{Topic}'.",
+                    session.CurrentTour, isSuddenDeath, topic);
+            }
+
             var questionsNeeded = Math.Max(targetBuffer - questions.Count, targetBuffer);
 
             // PRIORITY 1: pool
@@ -850,12 +871,13 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 ? ExtractAskedQuestions(dedupObj)
                 : new List<Question>();
             var dedupTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var q in sessionAskedForDedup) dedupTexts.Add(q.Text.Trim().ToLowerInvariant());
-            foreach (var q in questions) dedupTexts.Add(q.Text.Trim().ToLowerInvariant());
+            var dedupAnswers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var q in sessionAskedForDedup) { dedupTexts.Add(q.Text.Trim().ToLowerInvariant()); dedupAnswers.Add(q.Answer.Trim().ToLowerInvariant()); }
+            foreach (var q in questions) { dedupTexts.Add(q.Text.Trim().ToLowerInvariant()); dedupAnswers.Add(q.Answer.Trim().ToLowerInvariant()); }
 
             var rawFromPool = await _poolRepository.SelectQuestionsAsync(topic, questionsNeeded, cancellationToken);
             var questionsFromPool = rawFromPool
-                .Where(q => !dedupTexts.Contains(q.Text.Trim().ToLowerInvariant()))
+                .Where(q => !dedupTexts.Contains(q.Text.Trim().ToLowerInvariant()) && !dedupAnswers.Contains(q.Answer.Trim().ToLowerInvariant()))
                 .ToList();
 
             if (questionsFromPool.Count > 0)
@@ -866,6 +888,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 {
                     questions.Enqueue(question);
                     dedupTexts.Add(question.Text.Trim().ToLowerInvariant());
+                    dedupAnswers.Add(question.Answer.Trim().ToLowerInvariant());
                 }
 
                 await _repository.SaveAsync(session, cancellationToken);
@@ -886,9 +909,32 @@ public sealed class GameLifecycleService : IGameLifecycleService
             // PRIORITY 2: API generation.
             // If the queue is completely empty we MUST generate synchronously — returning with 0
             // questions causes CompleteTour → AdvanceRound → CompleteTour infinite recursion.
-            // If we already have some questions, fire in the background so the game doesn't block.
+            // If a background generation is already running for this chat, wait up to 30s for it
+            // to deposit questions into the pool before launching a competing synchronous call.
             if (questions.Count == 0)
             {
+                if (_generatingChats.ContainsKey(session.ChatId))
+                {
+                    _logger.LogInformation("Queue empty for tour {Tour} but background generation is running — waiting up to 30s for pool.", session.CurrentTour);
+                    for (var waited = 0; waited < 30 && _generatingChats.ContainsKey(session.ChatId); waited++)
+                    {
+                        await Task.Delay(1000, cancellationToken);
+                    }
+                    // Re-check pool after waiting
+                    var rawAfterWait = await _poolRepository.SelectQuestionsAsync(topic, questionsNeeded, cancellationToken);
+                    var afterWait = rawAfterWait
+                        .Where(q => !dedupTexts.Contains(q.Text.Trim().ToLowerInvariant()) && !dedupAnswers.Contains(q.Answer.Trim().ToLowerInvariant()))
+                        .ToList();
+                    if (afterWait.Count > 0)
+                    {
+                        _logger.LogInformation("Background generation delivered {Count} questions after wait. Using them.", afterWait.Count);
+                        foreach (var q in afterWait) questions.Enqueue(q);
+                        await _repository.SaveAsync(session, cancellationToken);
+                        return;
+                    }
+                    _logger.LogWarning("Background generation did not deliver questions in time. Falling back to synchronous generation.");
+                }
+
                 _logger.LogInformation("Queue is empty for tour {Tour} — generating synchronously to avoid infinite loop.", session.CurrentTour);
 
                 var provider = _questionProviderFactory.Resolve(session.QuestionSourceMode);
@@ -902,13 +948,13 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 if (provider is AiQuestionProvider aiProviderSync)
                 {
                     syncGenerated = await aiProviderSync.PrepareQuestionPoolAsync(
-                        new[] { topic }, 1, questionsNeeded, session.Players, session.Language,
+                        new[] { topic }, 1, questionsNeeded, Array.Empty<Player>(), session.Language,
                         session.MatureContent, allArchivedSync, session.DifficultyLevel, cancellationToken);
                 }
                 else
                 {
                     syncGenerated = await provider.PrepareQuestionPoolAsync(
-                        new[] { topic }, 1, questionsNeeded, session.Players, session.Language,
+                        new[] { topic }, 1, questionsNeeded, Array.Empty<Player>(), session.Language,
                         session.MatureContent, cancellationToken);
                 }
 
@@ -918,21 +964,71 @@ public sealed class GameLifecycleService : IGameLifecycleService
                 foreach (var q in syncList)
                 {
                     var key = q.Text.Trim().ToLowerInvariant();
-                    if (!dedupTexts.Contains(key))
+                    var answerKey = q.Answer.Trim().ToLowerInvariant();
+                    if (!dedupTexts.Contains(key) && !dedupAnswers.Contains(answerKey))
                     {
                         questions.Enqueue(q with { Topic = topic });
                         dedupTexts.Add(key);
+                        dedupAnswers.Add(answerKey);
                     }
                 }
 
                 await _repository.SaveAsync(session, cancellationToken);
 
-                if (syncList.Count == 0)
+                if (questions.Count > 0)
+                    return;
+
+                // Primary topic generation yielded nothing — try a fallback topic.
+                _logger.LogWarning("Primary topic '{Topic}' generation returned no questions. Attempting fallback topic.", topic);
+                var fallbackTopic = PickFallbackTopic(topic, session.Topics, _gameOptions.Topics);
+                _logger.LogInformation("Fallback topic selected: '{FallbackTopic}'", fallbackTopic);
+
+                var fallbackNotice = session.Language == GameLanguage.Russian
+                    ? $"⚠️ Не удалось получить вопросы по теме «{topic}». По техническим причинам меняем тему на «{fallbackTopic}»."
+                    : $"⚠️ Could not get questions for topic \"{topic}\". Switching to \"{fallbackTopic}\" for technical reasons.";
+                await _messenger.SendAsync(session.ChatId, fallbackNotice, cancellationToken);
+
+                var archivedFallback = await _poolRepository.GetArchivedQuestionsByTopicAllTimeAsync(fallbackTopic, cancellationToken);
+                var allArchivedFallback = new List<Question>(sessionAskedSync);
+                allArchivedFallback.AddRange(archivedFallback);
+
+                IReadOnlyDictionary<int, List<Question>> fallbackGenerated;
+                if (provider is AiQuestionProvider aiProviderFallback)
                 {
-                    var failMessage = session.Language == GameLanguage.Russian
-                        ? "⚠️ Не удалось получить дополнительные вопросы. Продолжаем с имеющимися."
-                        : "⚠️ Could not fetch additional questions. Continuing with remaining ones.";
-                    await _messenger.SendAsync(session.ChatId, failMessage, cancellationToken);
+                    fallbackGenerated = await aiProviderFallback.PrepareQuestionPoolAsync(
+                        new[] { fallbackTopic }, 1, questionsNeeded, Array.Empty<Player>(), session.Language,
+                        session.MatureContent, allArchivedFallback, session.DifficultyLevel, cancellationToken);
+                }
+                else
+                {
+                    fallbackGenerated = await provider.PrepareQuestionPoolAsync(
+                        new[] { fallbackTopic }, 1, questionsNeeded, Array.Empty<Player>(), session.Language,
+                        session.MatureContent, cancellationToken);
+                }
+
+                var fallbackList = fallbackGenerated.Values.FirstOrDefault() ?? new List<Question>();
+                _logger.LogInformation("Fallback generation produced {Count} questions for topic '{Topic}'.", fallbackList.Count, fallbackTopic);
+
+                foreach (var q in fallbackList)
+                {
+                    var key = q.Text.Trim().ToLowerInvariant();
+                    var answerKey = q.Answer.Trim().ToLowerInvariant();
+                    if (!dedupTexts.Contains(key) && !dedupAnswers.Contains(answerKey))
+                    {
+                        questions.Enqueue(q with { Topic = fallbackTopic });
+                        dedupTexts.Add(key);
+                        dedupAnswers.Add(answerKey);
+                    }
+                }
+
+                await _repository.SaveAsync(session, cancellationToken);
+
+                if (questions.Count == 0)
+                {
+                    var giveUpMessage = session.Language == GameLanguage.Russian
+                        ? "⚠️ Не удалось получить вопросы. Продолжаем с имеющимися."
+                        : "⚠️ Could not fetch questions. Continuing with remaining ones.";
+                    await _messenger.SendAsync(session.ChatId, giveUpMessage, cancellationToken);
                 }
 
                 return;
@@ -962,12 +1058,12 @@ public sealed class GameLifecycleService : IGameLifecycleService
             var language = session.Language;
             var matureContent = session.MatureContent;
             var difficultyLevel = session.DifficultyLevel;
-            var players = session.Players.ToList();
             var sourceMode = session.QuestionSourceMode;
             var currentTour = session.CurrentTour;
             var questionsNeededCapture = questionsNeeded;
             var topicCapture = topic;
             var allArchivedCapture = allArchivedQuestions;
+            var sessionTopicsCapture = session.Topics.ToArray();
 
             _ = Task.Run(async () =>
             {
@@ -985,7 +1081,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                             new[] { topicCapture },
                             1,
                             questionsNeededCapture,
-                            players,
+                            Array.Empty<Player>(),
                             language,
                             matureContent,
                             allArchivedCapture,
@@ -998,7 +1094,7 @@ public sealed class GameLifecycleService : IGameLifecycleService
                             new[] { topicCapture },
                             1,
                             questionsNeededCapture,
-                            players,
+                            Array.Empty<Player>(),
                             language,
                             matureContent,
                             CancellationToken.None);
@@ -1017,15 +1113,53 @@ public sealed class GameLifecycleService : IGameLifecycleService
                         return;
                     }
 
-                    // Always add generated questions to the shared pool rather than writing directly
-                    // into the session queue. Writing into the session requires a SaveAsync which races
-                    // with the foreground (especially during sudden death where SD metadata would be
-                    // overwritten by the stale deserialized liveSession). The pool is safe to write
-                    // concurrently; EnsureQuestionsAvailableAsync will pull from it on the next round.
                     if (generatedList.Count > 0)
                     {
+                        // Always add generated questions to the shared pool rather than writing directly
+                        // into the session queue. Writing into the session requires a SaveAsync which races
+                        // with the foreground (especially during sudden death where SD metadata would be
+                        // overwritten by the stale deserialized liveSession). The pool is safe to write
+                        // concurrently; EnsureQuestionsAvailableAsync will pull from it on the next round.
                         await _poolRepository.AddToUnusedPoolAsync(generatedList, CancellationToken.None);
                         _logger.LogInformation("Background generation added {Count} questions to pool for chat {ChatId}.", generatedList.Count, chatId);
+                        return;
+                    }
+
+                    // Background generation returned nothing — attempt a fallback topic silently
+                    // and add its questions to the pool so the next round can pick them up.
+                    _logger.LogWarning("Background generation for topic '{Topic}' returned 0 questions. Trying fallback topic for chat {ChatId}.",
+                        topicCapture, chatId);
+
+                    var bgFallbackTopic = PickFallbackTopic(topicCapture, sessionTopicsCapture, _gameOptions.Topics);
+                    _logger.LogInformation("Background fallback topic: '{FallbackTopic}' for chat {ChatId}", bgFallbackTopic, chatId);
+
+                    var fallbackNotice = language == GameLanguage.Russian
+                        ? $"⚠️ Не удалось получить вопросы по теме «{topicCapture}». По техническим причинам меняем тему на «{bgFallbackTopic}»."
+                        : $"⚠️ Could not get questions for topic \"{topicCapture}\". Switching to \"{bgFallbackTopic}\" for technical reasons.";
+                    await _messenger.SendAsync(chatId, fallbackNotice, CancellationToken.None);
+
+                    IReadOnlyDictionary<int, List<Question>> bgFallbackGenerated;
+                    if (provider is AiQuestionProvider aiProviderBg)
+                    {
+                        bgFallbackGenerated = await aiProviderBg.PrepareQuestionPoolAsync(
+                            new[] { bgFallbackTopic }, 1, questionsNeededCapture, Array.Empty<Player>(), language,
+                            matureContent, allArchivedCapture, difficultyLevel, CancellationToken.None);
+                    }
+                    else
+                    {
+                        bgFallbackGenerated = await provider.PrepareQuestionPoolAsync(
+                            new[] { bgFallbackTopic }, 1, questionsNeededCapture, Array.Empty<Player>(), language,
+                            matureContent, CancellationToken.None);
+                    }
+
+                    var bgFallbackList = bgFallbackGenerated.Values.FirstOrDefault() ?? new List<Question>();
+                    _logger.LogInformation("Background fallback generation produced {Count} questions for chat {ChatId}", bgFallbackList.Count, chatId);
+
+                    if (bgFallbackList.Count > 0)
+                    {
+                        var topicTagged = bgFallbackList.Select(q => q with { Topic = bgFallbackTopic }).ToList();
+                        await _poolRepository.AddToUnusedPoolAsync(topicTagged, CancellationToken.None);
+                        _logger.LogInformation("Background fallback added {Count} questions to pool for chat {ChatId}.", topicTagged.Count, chatId);
                     }
                 }
                 catch (Exception ex)
@@ -1043,6 +1177,32 @@ public sealed class GameLifecycleService : IGameLifecycleService
             _logger.LogError(ex, "Failed to ensure questions for chat {ChatId}, tour {Tour}",
                 session.ChatId, session.CurrentTour);
         }
+    }
+
+    /// <summary>
+    /// Picks a fallback topic that is different from <paramref name="currentTopic"/>.
+    /// Prefers configured topics; falls back to any available topic.
+    /// </summary>
+    private static string PickFallbackTopic(string currentTopic, IReadOnlyList<string> sessionTopics, string[] configuredTopics)
+    {
+        // Prefer configured topics different from the failed one
+        var candidates = configuredTopics
+            .Where(t => !string.Equals(t, currentTopic, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (candidates.Count > 0)
+            return candidates[Random.Shared.Next(candidates.Count)];
+
+        // Fall back to session topics
+        var sessionCandidates = sessionTopics
+            .Where(t => !string.Equals(t, currentTopic, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (sessionCandidates.Count > 0)
+            return sessionCandidates[Random.Shared.Next(sessionCandidates.Count)];
+
+        // Absolute last resort: use a fixed generic topic
+        return "General";
     }
 
     private async Task PrepareNextTourQuestionsAsync(GameSession session, CancellationToken cancellationToken)

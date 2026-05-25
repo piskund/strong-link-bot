@@ -157,8 +157,8 @@ public sealed class StartCommandHandler : CommandHandlerBase
             VersionInfo.Version);
         await Client.SendTextMessageAsync(chatId, welcome, cancellationToken: cancellationToken);
 
-        // Automatically prepare question pool
-        await PrepareQuestionPoolAsync(session, cancellationToken);
+        // Prepare question pool in background so bot stays responsive during generation
+        _ = Task.Run(() => PrepareQuestionPoolAsync(session, CancellationToken.None), CancellationToken.None);
     }
 
     private async Task PrepareQuestionPoolAsync(GameSession session, CancellationToken cancellationToken)
@@ -172,142 +172,89 @@ public sealed class StartCommandHandler : CommandHandlerBase
 
         try
         {
-            var requiredPerTour = Math.Max(1, session.Players.Count) * session.RoundsPerTour;
+            // Assume at least 3 players — players join after /start so count is 0 here.
+            // 3 players × 10 rounds = 30 questions, which is also one generation chunk.
+            const int AssumedMinPlayers = 3;
+            var requiredPerTour = Math.Max(AssumedMinPlayers, session.Players.Count) * session.RoundsPerTour;
+            var MinQuestionsToStart = requiredPerTour;
 
-            // First, try to get questions from the unused pool
             var poolStats = await _poolRepository.GetPoolStatsAsync(cancellationToken);
             _logger.LogInformation("Current pool stats: {Unused} unused, {Archived} archived",
                 poolStats.Unused, poolStats.Archived);
 
-            // Get archived questions to avoid repetition when generating new ones
-            var archivedQuestions = await _poolRepository.GetArchivedQuestionsAsync(cancellationToken);
-            _logger.LogInformation("Retrieved {Count} archived questions for AI context", archivedQuestions.Count);
+            var topic = session.Topics.ElementAtOrDefault(0) ?? "Topic 1";
+            var archivedForContext = await _poolRepository.GetArchivedQuestionsByTopicAllTimeAsync(topic, cancellationToken);
+            var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, cancellationToken);
 
-            var pool = new Dictionary<int, List<Question>>();
-            var reusedCount = 0;
-            var generatedQuestions = new List<Question>();
+            var tour1Questions = questionsFromPool
+                .Take(requiredPerTour)
+                .Select(q => q with { Topic = topic })
+                .ToList();
 
-            // OPTIMIZATION: Only prepare Tour 1 immediately for quick start
-            for (var tourIndex = 0; tourIndex < 1; tourIndex++)
+            // If pool doesn't have enough to reach the minimum, generate one chunk synchronously now.
+            if (tour1Questions.Count < MinQuestionsToStart)
             {
-                var topic = session.Topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
+                var needed = MinQuestionsToStart - tour1Questions.Count;
+                _logger.LogInformation("Pool has {Count} questions for tour 1, generating {Needed} more (min {Min}) before marking ready",
+                    tour1Questions.Count, needed, MinQuestionsToStart);
 
-                var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, cancellationToken);
+                var generatingMessage = session.Language == GameLanguage.Russian
+                    ? $"🤖 Генерирую вопросы для тура 1: \"{topic}\"..."
+                    : $"🤖 Generating questions for tour 1: \"{topic}\"...";
+                await Client.SendTextMessageAsync(chatId, generatingMessage, cancellationToken: cancellationToken);
 
-                if (questionsFromPool.Count >= requiredPerTour)
+                var provider = _factory.Resolve(session.QuestionSourceMode);
+                if (provider is AiQuestionProvider aiProvider)
                 {
-                    // Enough questions in pool for this tour
-                    pool[tourIndex + 1] = questionsFromPool.Take(requiredPerTour)
-                        .Select(q => q with { Topic = topic })
-                        .ToList();
-                    reusedCount += requiredPerTour;
-                    _logger.LogDebug("Reusing {Count} questions from pool for tour {Tour} ({Topic})",
-                        requiredPerTour, tourIndex + 1, topic);
+                    var generated = await aiProvider.PrepareQuestionPoolAsync(
+                        new[] { topic }, 1, needed, session.Players, session.Language,
+                        session.MatureContent, archivedForContext.TakeLast(100).ToList(),
+                        session.DifficultyLevel, cancellationToken);
+                    tour1Questions.AddRange(generated.Values.FirstOrDefault() ?? new List<Question>());
                 }
                 else
                 {
-                    // Still not enough - need to generate via API
-                    _logger.LogInformation("Only {Available} questions available in pool for tour {Tour}, generating {Needed} more via API",
-                        questionsFromPool.Count, tourIndex + 1, requiredPerTour - questionsFromPool.Count);
-
-                    var provider = _factory.Resolve(session.QuestionSourceMode);
-
-                    // Notify chat that generation is starting for this tour
-                    var generatingMessage = session.Language == GameLanguage.Russian
-                        ? $"🤖 Генерирую вопросы для тура {tourIndex + 1}: \"{topic}\"..."
-                        : $"🤖 Generating questions for tour {tourIndex + 1}: \"{topic}\"...";
-
-                    await Client.SendTextMessageAsync(chatId, generatingMessage, cancellationToken: cancellationToken);
-
-                    // Pass archived questions to AI provider to avoid repetition
-                    IReadOnlyDictionary<int, List<Question>> generated;
-                    if (provider is AiQuestionProvider aiProvider)
-                    {
-                        generated = await aiProvider.PrepareQuestionPoolAsync(
-                            new[] { topic },
-                            1,
-                            session.RoundsPerTour,
-                            session.Players,
-                            session.Language,
-                            session.MatureContent,
-                            archivedQuestions,
-                            cancellationToken);
-                    }
-                    else
-                    {
-                        generated = await provider.PrepareQuestionPoolAsync(
-                            new[] { topic },
-                            1,
-                            session.RoundsPerTour,
-                            session.Players,
-                            session.Language,
-                            session.MatureContent,
-                            cancellationToken);
-                    }
-
-                    _logger.LogInformation("Provider returned dictionary with {Count} entries", generated.Count);
-                    var generatedList = generated.Values.FirstOrDefault() ?? new List<Question>();
-                    _logger.LogInformation("Generated {Count} questions for tour {Tour} topic {Topic}",
-                        generatedList.Count, tourIndex + 1, topic);
-                    generatedQuestions.AddRange(generatedList);
-
-                    // Combine pool questions + generated
-                    var combined = new List<Question>(questionsFromPool);
-                    combined.AddRange(generatedList);
-
-                    pool[tourIndex + 1] = combined.Take(requiredPerTour).ToList();
-                    _logger.LogInformation("Added {Count} questions to pool dictionary for tour {Tour}",
-                        pool[tourIndex + 1].Count, tourIndex + 1);
-                    reusedCount += questionsFromPool.Count;
+                    var generated = await provider.PrepareQuestionPoolAsync(
+                        new[] { topic }, 1, needed, session.Players, session.Language,
+                        session.MatureContent, cancellationToken);
+                    tour1Questions.AddRange(generated.Values.FirstOrDefault() ?? new List<Question>());
                 }
+
+                _logger.LogInformation("Initial generation complete: {Count} questions for tour 1", tour1Questions.Count);
             }
 
-            _logger.LogInformation("Pool dictionary has {Count} tours before copying to session", pool.Count);
-
-            session.QuestionsByTour.Clear();
-            foreach (var (tour, questions) in pool)
+            // Reload before writing — game may have started while we were generating.
+            var liveSession = await Repository.LoadAsync(chatId, cancellationToken);
+            if (liveSession == null || liveSession.Id != session.Id)
             {
-                session.QuestionsByTour[tour] = new Queue<Question>(questions);
-                _logger.LogInformation("Copied {Count} questions to session.QuestionsByTour[{Tour}]", questions.Count, tour);
+                _logger.LogInformation("Session replaced for chat {ChatId} during pool prep — discarding generated questions", chatId);
+                if (tour1Questions.Count > 0)
+                    await _poolRepository.AddToUnusedPoolAsync(tour1Questions, cancellationToken);
+                return;
             }
-
-            // Add only SURPLUS generated questions back to unused pool
-            if (generatedQuestions.Count > 0)
+            if (liveSession.Status == GameStatus.InProgress || liveSession.Status == GameStatus.SuddenDeath)
             {
-                var usedQuestionTexts = new HashSet<string>(
-                    pool.Values.SelectMany(q => q).Select(q => q.Text.Trim().ToLowerInvariant()),
-                    StringComparer.OrdinalIgnoreCase);
-
-                var surplusQuestions = generatedQuestions
-                    .Where(q => !usedQuestionTexts.Contains(q.Text.Trim().ToLowerInvariant()))
-                    .ToList();
-
-                if (surplusQuestions.Count > 0)
-                {
-                    await _poolRepository.AddToUnusedPoolAsync(surplusQuestions, cancellationToken);
-                    _logger.LogInformation("Added {Count} surplus generated questions to unused pool (out of {Total} generated)",
-                        surplusQuestions.Count, generatedQuestions.Count);
-                }
+                _logger.LogInformation("Game already started for chat {ChatId} during pool prep — depositing {Count} questions to pool", chatId, tour1Questions.Count);
+                if (tour1Questions.Count > 0)
+                    await _poolRepository.AddToUnusedPoolAsync(tour1Questions, cancellationToken);
+                return;
             }
 
-            var totalQuestions = session.QuestionsByTour.Values.Sum(q => q.Count);
-            _logger.LogInformation("Tour 1 prepared successfully for chat {ChatId}. Total: {Total} questions ({Reused} reused, {Generated} generated)",
-                chatId, totalQuestions, reusedCount, generatedQuestions.Count);
-
-            session.Status = GameStatus.ReadyToStart;
-            await Repository.SaveAsync(session, cancellationToken);
+            liveSession.QuestionsByTour[1] = new Queue<Question>(tour1Questions);
+            liveSession.Status = GameStatus.ReadyToStart;
+            await Repository.SaveAsync(liveSession, cancellationToken);
+            session = liveSession;
 
             var readyText = Localization.GetString(session.Language, "Bot.PoolReady");
             await Client.SendTextMessageAsync(chatId, readyText, cancellationToken: cancellationToken);
 
-            // Start background preparation for remaining tours (2-8)
-            if (session.Tours > 1)
-            {
-                _logger.LogInformation("Starting background preparation for tours 2-{MaxTour} for chat {ChatId}",
-                    session.Tours, chatId);
-                _ = PrepareRemainingToursInBackgroundAsync(session.Id, chatId, session.Topics, session.Tours,
-                    session.RoundsPerTour, session.Players, session.Language, session.QuestionSourceMode, session.MatureContent);
-            }
+            _logger.LogInformation("Session ready for chat {ChatId} with {Count} questions in tour 1. Filling remainder in background.",
+                chatId, tour1Questions.Count);
+
+            // Fill remaining questions for all tours in background.
+            _ = PrepareAllToursInBackgroundAsync(session.Id, chatId, session.Topics, session.Tours,
+                session.RoundsPerTour, session.Players, session.Language, session.QuestionSourceMode,
+                session.MatureContent, session.DifficultyLevel, tour1Questions);
         }
         catch (Exception ex)
         {
@@ -319,7 +266,7 @@ public sealed class StartCommandHandler : CommandHandlerBase
         }
     }
 
-    private async Task PrepareRemainingToursInBackgroundAsync(
+    private async Task PrepareAllToursInBackgroundAsync(
         Guid sessionId,
         long chatId,
         IReadOnlyList<string> topics,
@@ -328,126 +275,152 @@ public sealed class StartCommandHandler : CommandHandlerBase
         IReadOnlyList<Player> players,
         GameLanguage language,
         QuestionSourceMode questionSourceMode,
-        bool matureContent)
+        bool matureContent,
+        DifficultyLevel difficultyLevel,
+        IReadOnlyList<Question> alreadyInTour1)
     {
         try
         {
-            _logger.LogInformation("Background: Preparing tours 2-{TotalTours} for session {SessionId}",
-                totalTours, sessionId);
+            _logger.LogInformation("Background: Preparing all {TotalTours} tours for session {SessionId}", totalTours, sessionId);
 
             var requiredPerTour = Math.Max(1, players.Count) * roundsPerTour;
 
-            // Get archived questions for context
-            var archivedQuestions = await _poolRepository.GetArchivedQuestionsAsync(CancellationToken.None);
+            // Track questions already placed so we don't re-use them across tours
+            var usedTexts = new HashSet<string>(
+                alreadyInTour1.Select(q => q.Text.Trim().ToLowerInvariant()),
+                StringComparer.OrdinalIgnoreCase);
 
-            for (var tourIndex = 1; tourIndex < totalTours; tourIndex++)
+            for (var tourIndex = 0; tourIndex < totalTours; tourIndex++)
             {
-                // Check if session still exists and game hasn't been cancelled
                 var session = await Repository.LoadAsync(chatId, CancellationToken.None);
                 if (session == null || session.Id != sessionId ||
                     session.Status == GameStatus.Cancelled || session.Status == GameStatus.Completed)
                 {
-                    _logger.LogInformation("Background: Stopping preparation - session no longer active");
+                    _logger.LogInformation("Background: Stopping - session gone or finished (status: {Status})", session?.Status);
                     return;
                 }
+                if (session.Status == GameStatus.InProgress || session.Status == GameStatus.SuddenDeath)
+                {
+                    _logger.LogInformation("Background: Game already started (status: {Status}) — remaining questions will go to pool", session.Status);
+                    // Don't return — continue the loop so generated questions get deposited into the pool
+                    // (the pre-save check below handles the actual routing to pool vs session)
+                }
 
-                // Check if this tour already has questions
-                if (session.QuestionsByTour.ContainsKey(tourIndex + 1) &&
-                    session.QuestionsByTour[tourIndex + 1].Count > 0)
+                var topic = topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
+
+                // Tour 1: top up whatever was already loaded from pool
+                if (tourIndex == 0)
+                {
+                    var existing = session.QuestionsByTour.TryGetValue(1, out var q1) ? q1.Count : 0;
+                    if (existing >= requiredPerTour)
+                    {
+                        _logger.LogDebug("Background: Tour 1 already fully loaded ({Count} questions), skipping generation", existing);
+                        continue;
+                    }
+                }
+                else if (session.QuestionsByTour.ContainsKey(tourIndex + 1) &&
+                         session.QuestionsByTour[tourIndex + 1].Count >= requiredPerTour)
                 {
                     _logger.LogDebug("Background: Tour {Tour} already prepared, skipping", tourIndex + 1);
                     continue;
                 }
 
-                var topic = topics.ElementAtOrDefault(tourIndex) ?? $"Topic {tourIndex + 1}";
-                _logger.LogInformation("Background: Preparing tour {Tour}/{Total} - topic {Topic}",
-                    tourIndex + 1, totalTours, topic);
+                _logger.LogInformation("Background: Preparing tour {Tour}/{Total} - topic '{Topic}'", tourIndex + 1, totalTours, topic);
 
                 var questionsFromPool = await _poolRepository.SelectQuestionsAsync(topic, requiredPerTour, CancellationToken.None);
+                var freshFromPool = questionsFromPool
+                    .Where(q => !usedTexts.Contains(q.Text.Trim().ToLowerInvariant()))
+                    .Take(requiredPerTour)
+                    .ToList();
 
-                List<Question> tourQuestions;
-                if (questionsFromPool.Count >= requiredPerTour)
+                List<Question> tourQuestions = new(freshFromPool);
+                foreach (var q in freshFromPool) usedTexts.Add(q.Text.Trim().ToLowerInvariant());
+
+                if (tourQuestions.Count < requiredPerTour)
                 {
-                    // Enough from pool
-                    tourQuestions = questionsFromPool.Take(requiredPerTour)
-                        .Select(q => q with { Topic = topic })
-                        .ToList();
-                    _logger.LogDebug("Background: Reusing {Count} questions from pool for tour {Tour}",
-                        requiredPerTour, tourIndex + 1);
-                }
-                else
-                {
-                    // Need to generate
-                    _logger.LogInformation("Background: Generating {Needed} questions for tour {Tour}",
-                        requiredPerTour - questionsFromPool.Count, tourIndex + 1);
+                    var needed = requiredPerTour - tourQuestions.Count;
+                    _logger.LogInformation("Background: Generating {Needed} questions for tour {Tour}", needed, tourIndex + 1);
 
                     var provider = _factory.Resolve(questionSourceMode);
+                    var archivedForTopic = await _poolRepository.GetArchivedQuestionsByTopicAllTimeAsync(topic, CancellationToken.None);
+                    var exclusions = archivedForTopic.TakeLast(100).ToList();
 
                     IReadOnlyDictionary<int, List<Question>> generated;
                     if (provider is AiQuestionProvider aiProvider)
                     {
                         generated = await aiProvider.PrepareQuestionPoolAsync(
-                            new[] { topic },
-                            1,
-                            roundsPerTour,
-                            players,
-                            language,
-                            matureContent,
-                            archivedQuestions,
-                            CancellationToken.None);
+                            new[] { topic }, 1, needed, players, language, matureContent,
+                            exclusions, difficultyLevel, CancellationToken.None);
                     }
                     else
                     {
                         generated = await provider.PrepareQuestionPoolAsync(
-                            new[] { topic },
-                            1,
-                            roundsPerTour,
-                            players,
-                            language,
-                            matureContent,
-                            CancellationToken.None);
+                            new[] { topic }, 1, needed, players, language, matureContent, CancellationToken.None);
                     }
 
                     var generatedList = generated.Values.FirstOrDefault() ?? new List<Question>();
-                    _logger.LogInformation("Background: Generated {Count} questions for tour {Tour}",
-                        generatedList.Count, tourIndex + 1);
+                    _logger.LogInformation("Background: Generated {Count} questions for tour {Tour}", generatedList.Count, tourIndex + 1);
 
-                    var combined = new List<Question>(questionsFromPool);
-                    combined.AddRange(generatedList);
-                    tourQuestions = combined.Take(requiredPerTour).ToList();
-
-                    // Store surplus questions
-                    var usedTexts = new HashSet<string>(
-                        tourQuestions.Select(q => q.Text.Trim().ToLowerInvariant()),
-                        StringComparer.OrdinalIgnoreCase);
-
-                    var surplus = generatedList
-                        .Where(q => !usedTexts.Contains(q.Text.Trim().ToLowerInvariant()))
-                        .ToList();
+                    var surplus = new List<Question>();
+                    foreach (var q in generatedList)
+                    {
+                        var key = q.Text.Trim().ToLowerInvariant();
+                        if (usedTexts.Contains(key)) continue;
+                        usedTexts.Add(key);
+                        if (tourQuestions.Count < requiredPerTour)
+                            tourQuestions.Add(q);
+                        else
+                            surplus.Add(q);
+                    }
 
                     if (surplus.Count > 0)
                     {
                         await _poolRepository.AddToUnusedPoolAsync(surplus, CancellationToken.None);
-                        _logger.LogDebug("Background: Stored {Count} surplus questions", surplus.Count);
+                        _logger.LogDebug("Background: Stored {Count} surplus questions in pool", surplus.Count);
                     }
                 }
 
-                // Reload session and add questions
+                // Reload to get latest session state before writing — never overwrite an active game.
                 session = await Repository.LoadAsync(chatId, CancellationToken.None);
-                if (session != null && session.Id == sessionId)
+                if (session == null || session.Id != sessionId) return;
+
+                if (session.Status == GameStatus.InProgress || session.Status == GameStatus.SuddenDeath)
                 {
-                    session.QuestionsByTour[tourIndex + 1] = new Queue<Question>(tourQuestions);
-                    await Repository.SaveAsync(session, CancellationToken.None);
-                    _logger.LogInformation("Background: Tour {Tour} prepared and saved ({Count} questions)",
-                        tourIndex + 1, tourQuestions.Count);
+                    // Game started while we were generating — deposit into pool so EnsureQuestionsAvailableAsync picks them up.
+                    if (tourQuestions.Count > 0)
+                    {
+                        await _poolRepository.AddToUnusedPoolAsync(tourQuestions, CancellationToken.None);
+                        _logger.LogInformation("Background: Game already started — deposited {Count} tour {Tour} questions into pool", tourQuestions.Count, tourIndex + 1);
+                    }
+                    return;
                 }
+
+                if (!session.QuestionsByTour.TryGetValue(tourIndex + 1, out var liveQueue))
+                {
+                    liveQueue = new Queue<Question>();
+                    session.QuestionsByTour[tourIndex + 1] = liveQueue;
+                }
+
+                var liveTexts = new HashSet<string>(liveQueue.Select(q => q.Text.Trim().ToLowerInvariant()), StringComparer.OrdinalIgnoreCase);
+                foreach (var q in tourQuestions)
+                {
+                    var key = q.Text.Trim().ToLowerInvariant();
+                    if (!liveTexts.Contains(key))
+                    {
+                        liveQueue.Enqueue(q with { Topic = topic });
+                        liveTexts.Add(key);
+                    }
+                }
+
+                await Repository.SaveAsync(session, CancellationToken.None);
+                _logger.LogInformation("Background: Tour {Tour} ready — {Count} questions in queue", tourIndex + 1, liveQueue.Count);
             }
 
-            _logger.LogInformation("Background: Completed preparation for all tours for session {SessionId}", sessionId);
+            _logger.LogInformation("Background: All tours prepared for session {SessionId}", sessionId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Background: Failed to prepare remaining tours for session {SessionId}", sessionId);
+            _logger.LogError(ex, "Background: Failed to prepare tours for session {SessionId}", sessionId);
         }
     }
 

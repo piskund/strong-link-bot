@@ -146,9 +146,8 @@ public class ScheduledGameServiceTests
         Assert.True(savedSession.Metadata.ContainsKey("IsScheduledGame"));
         Assert.True(savedSession.Metadata.ContainsKey("ScheduledAutoStartTime"));
 
-        // Should send multiple messages: initial announcement + question preparation start + error/completion
-        Assert.True(_sentMessages.Count >= 2, $"Expected at least 2 messages, but got {_sentMessages.Count}");
-        // First message could be in Russian or English
+        // Question prep is fire-and-forget; only the initial announcement is sent synchronously.
+        Assert.True(_sentMessages.Count >= 1, $"Expected at least 1 message, but got {_sentMessages.Count}");
         Assert.True(_sentMessages[0].Contains("game", StringComparison.OrdinalIgnoreCase) ||
                     _sentMessages[0].Contains("игра", StringComparison.OrdinalIgnoreCase),
                     $"Expected first message to contain 'game' or 'игра', but got: {_sentMessages[0]}");
