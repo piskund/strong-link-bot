@@ -10,7 +10,7 @@ echo   Strong Link Bot - Stop
 echo ================================
 echo.
 
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
 echo Stopping container...
 docker-compose down

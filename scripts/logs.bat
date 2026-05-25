@@ -12,7 +12,6 @@ echo.
 echo Press Ctrl+C to stop viewing logs
 echo.
 
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
-REM Follow logs in real-time
 docker-compose logs -f

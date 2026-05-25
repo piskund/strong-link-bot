@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # deploy.sh — build, test, bump version, redeploy
-# Usage: ./deploy.sh [--skip-tests] [--dry-run]
+# Usage: ./scripts/deploy.sh [--skip-tests] [--dry-run]
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CSPROJ="$REPO_ROOT/src/StrongLink.Worker/StrongLink.Worker.csproj"
 SERVICE="stronglink-bot"
 

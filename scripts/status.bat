@@ -10,7 +10,7 @@ echo   Strong Link Bot - Status
 echo ================================
 echo.
 
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
 echo Container Status:
 docker-compose ps

@@ -18,6 +18,10 @@ public sealed class ScheduledGameService : BackgroundService
     private readonly ILogger<ScheduledGameService> _logger;
     private DateTime _lastCheckDate = DateTime.MinValue;
 
+    // If the machine resumes from sleep and we're more than this far past the scheduled/auto-start
+    // time, treat it as a missed window and cancel rather than starting hours late.
+    private static readonly TimeSpan SleepRecoveryThreshold = TimeSpan.FromMinutes(30);
+
     public ScheduledGameService(
         IGameSessionRepository repository,
         IChatMessenger messenger,
@@ -102,9 +106,22 @@ public sealed class ScheduledGameService : BackgroundService
             return;
         }
 
-        // Check if it's time to trigger the scheduled start
+        // Check if it's time to trigger the scheduled start.
+        // If now is more than 30 minutes past the scheduled time the machine likely woke from
+        // sleep and the window has been missed — skip today rather than starting hours late.
         if (now >= scheduledTime && _lastCheckDate < currentDate)
         {
+            if (now - scheduledTime > SleepRecoveryThreshold)
+            {
+                _logger.LogWarning(
+                    "Scheduled game time was {ScheduledTime} UTC but current time is {Now} UTC " +
+                    "({MinutesLate:F0} minutes late) — machine likely resumed from sleep. " +
+                    "Skipping today's scheduled game.",
+                    scheduledTime, now, (now - scheduledTime).TotalMinutes);
+                _lastCheckDate = currentDate;
+                return;
+            }
+
             _logger.LogInformation("Scheduled game time reached. Triggering scheduled game initialization");
             _lastCheckDate = currentDate;
 
@@ -248,10 +265,31 @@ public sealed class ScheduledGameService : BackgroundService
                     TryGetStringFromMetadata(session.Metadata, "ScheduledAutoStartTime", out var autoStartStr) &&
                     DateTimeOffset.TryParse(autoStartStr, out var autoStartTime))
                 {
-                    if (DateTimeOffset.UtcNow >= autoStartTime)
+                    var utcNow = DateTimeOffset.UtcNow;
+                    if (utcNow >= autoStartTime)
                     {
-                        _logger.LogInformation("Auto-start time reached for scheduled game in chat {ChatId}", chatId);
-                        await AutoStartScheduledGameAsync(session, cancellationToken);
+                        var overdue = utcNow - autoStartTime;
+                        if (overdue > SleepRecoveryThreshold)
+                        {
+                            _logger.LogWarning(
+                                "Auto-start time for scheduled game in chat {ChatId} was {AutoStartTime} UTC " +
+                                "but current time is {Now} UTC ({MinutesLate:F0} minutes late) — " +
+                                "machine likely resumed from sleep. Cancelling stale scheduled game.",
+                                chatId, autoStartTime, utcNow, overdue.TotalMinutes);
+                            session.Status = GameStatus.Cancelled;
+                            session.Metadata.Remove("IsScheduledGame");
+                            session.Metadata.Remove("ScheduledAutoStartTime");
+                            await _repository.SaveAsync(session, cancellationToken);
+                            var cancelMessage = session.Language == GameLanguage.Russian
+                                ? "⚠️ Запланированная игра отменена: бот был недоступен и пропустил время старта."
+                                : "⚠️ Scheduled game cancelled: the bot was unavailable and missed the start window.";
+                            await _messenger.SendAsync(chatId, cancelMessage, cancellationToken);
+                        }
+                        else
+                        {
+                            _logger.LogInformation("Auto-start time reached for scheduled game in chat {ChatId}", chatId);
+                            await AutoStartScheduledGameAsync(session, cancellationToken);
+                        }
                     }
                     else
                     {
