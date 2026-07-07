@@ -601,7 +601,40 @@ public sealed class ScheduledGameService : BackgroundService
         _logger.LogInformation("Prepared {Total} questions across {Tours} tour(s) for scheduled game",
             totalQuestions, toursToPrep);
 
-        session.Status = GameStatus.ReadyToStart;
-        await _repository.SaveAsync(session, cancellationToken);
+        // Persist onto the freshest session, not the captured one. When this runs as a background
+        // task (kicked off from InitializeScheduledGameAsync), we captured `session` with 0 players
+        // *before* the long AI generation. Players who run /join in the meantime load, mutate, and
+        // save their own copy of the session to disk. Saving our stale captured object here would
+        // overwrite those joins — the game would then auto-start seeing 0 players and be cancelled
+        // with "nobody joined" even though someone did join. Reload the current copy and merge the
+        // prepared questions onto it so the joined players survive.
+        var latest = await _repository.LoadAsync(session.ChatId, cancellationToken);
+        if (latest is not null &&
+            (latest.Status == GameStatus.AwaitingPlayers || latest.Status == GameStatus.ReadyToStart))
+        {
+            latest.QuestionsByTour.Clear();
+            foreach (var kvp in session.QuestionsByTour)
+            {
+                latest.QuestionsByTour[kvp.Key] = new Queue<Question>(kvp.Value);
+            }
+            latest.Status = GameStatus.ReadyToStart;
+
+            // Keep the passed-in reference consistent for callers that continue to use `session`
+            // after this returns (AutoStartScheduledGameAsync starts the game with it directly).
+            session.Players.Clear();
+            session.Players.AddRange(latest.Players);
+
+            await _repository.SaveAsync(latest, cancellationToken);
+            _logger.LogInformation("Merged prepared questions onto current session for chat {ChatId} ({PlayerCount} player(s) preserved)",
+                session.ChatId, latest.Players.Count);
+        }
+        else
+        {
+            // The session was removed, cancelled, or already started elsewhere while we were
+            // generating. Don't resurrect it by writing our stale copy — just drop the questions.
+            _logger.LogWarning("Session for chat {ChatId} is no longer awaiting players (status: {Status}). " +
+                "Discarding prepared questions to avoid clobbering current state.",
+                session.ChatId, latest?.Status.ToString() ?? "missing");
+        }
     }
 }

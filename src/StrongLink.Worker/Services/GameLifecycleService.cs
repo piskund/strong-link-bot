@@ -76,9 +76,14 @@ public sealed class GameLifecycleService : IGameLifecycleService
             return;
         }
 
-        if (session.QuestionsByTour.Count == 0)
+        // Count actual questions, not tour keys. A tour key can exist while mapping to an empty
+        // queue (e.g. question generation failed during pool prep). Guarding on .Count here would
+        // let such a session pass, announce "game started", flip to InProgress, and then stall in
+        // AdvanceRoundAsync with nothing to ask — the game looks started but never progresses.
+        if (session.QuestionsByTour.Values.Sum(q => q.Count) == 0)
         {
-            _logger.LogWarning("No question pool available for chat {ChatId}", session.ChatId);
+            _logger.LogWarning("No question pool available for chat {ChatId} (tour keys: {Keys}, total questions: 0)",
+                session.ChatId, session.QuestionsByTour.Count);
             var text = _localization.GetString(session.Language, "Game.NoQuestionPool");
             await _messenger.SendAsync(session.ChatId, text, cancellationToken);
             return;
@@ -129,33 +134,33 @@ public sealed class GameLifecycleService : IGameLifecycleService
         _logger.LogDebug("AdvanceRoundAsync: Status: {Status}, Tour {Tour}, Round {Round}, TurnQueue: {QueueCount}",
             session.Status, session.CurrentTour, session.CurrentRound, session.TurnQueue.Count);
 
-        // Check if we need to generate more questions
-        await EnsureQuestionsAvailableAsync(session, cancellationToken);
-
-        if (!session.QuestionsByTour.TryGetValue(session.CurrentTour, out var questions) || questions.Count == 0)
+        // Idempotency guard: a question is already posed and awaiting an answer. Advancing now would
+        // skip the current player's turn and burn a question without anyone answering it. The round
+        // is only ever advanced in response to an answer or a timeout (both of which clear
+        // CurrentQuestion first), so a pending question means this is a spurious/duplicate call —
+        // e.g. an answer landing at the same moment its timeout fires. Just return.
+        if (session.CurrentQuestion is not null)
         {
-            _logger.LogInformation("No questions remaining for tour {Tour}. Completing tour.", session.CurrentTour);
-
-            // Safety check: if we've already tried to complete a tour due to lack of questions,
-            // and we still have no questions, end the game to avoid infinite loop
-            if (session.Metadata.TryGetValue("LastNoQuestionsTour", out var lastTourObj) &&
-                lastTourObj is int lastTour && lastTour == session.CurrentTour - 1)
-            {
-                _logger.LogWarning("Detected consecutive tours with no questions. Ending game to prevent infinite loop. Tour: {Tour}",
-                    session.CurrentTour);
-                session.Metadata.Remove("LastNoQuestionsTour");
-                await CompleteGameAsync(session, cancellationToken);
-                return;
-            }
-
-            // Mark that we're completing a tour due to lack of questions
-            session.Metadata["LastNoQuestionsTour"] = session.CurrentTour;
-            await CompleteTourAsync(session, cancellationToken);
+            _logger.LogDebug("AdvanceRoundAsync called while a question is still pending for chat {ChatId}. Ignoring duplicate advance.",
+                session.ChatId);
             return;
         }
 
-        // Clear the flag if we have questions
-        session.Metadata.Remove("LastNoQuestionsTour");
+        // Check if we need to generate more questions
+        await EnsureQuestionsAvailableAsync(session, cancellationToken);
+
+        if (!session.QuestionsByTour.TryGetValue(session.CurrentTour, out var questions))
+        {
+            questions = new Queue<Question>();
+            session.QuestionsByTour[session.CurrentTour] = questions;
+        }
+
+        // NOTE: do NOT bail here just because the queue is empty. End-of-round processing
+        // (sudden-death resolution, elimination, tour completion) does not need a *new* question
+        // and must run first — otherwise a resolvable sudden death whose queue happens to be empty
+        // falls through to CompleteTour, which re-enters sudden death on the same tour (scores still
+        // tied) and recurses AdvanceRound ⇄ CompleteTour forever. The no-questions check now lives
+        // just before we actually need to ask a question (further below).
 
         if (session.TurnQueue.Count == 0)
         {
@@ -336,6 +341,33 @@ public sealed class GameLifecycleService : IGameLifecycleService
             await CompleteTourAsync(session, cancellationToken);
             return;
         }
+
+        // We have a player to ask but no question to ask them. Complete the tour, but guard against
+        // an infinite AdvanceRound ⇄ CompleteTour loop: if CompleteTour keeps the game on the same
+        // tour (e.g. re-entering sudden death while scores stay tied) and the queue is still empty
+        // on the next pass, the streak counter trips and we end the game. Counting *consecutive*
+        // empty completions catches this even when the tour number never advances.
+        if (questions.Count == 0)
+        {
+            _logger.LogInformation("No questions remaining for tour {Tour} after end-of-round processing.", session.CurrentTour);
+
+            var emptyStreak = GetNoQuestionsStreak(session) + 1;
+            if (emptyStreak >= 2)
+            {
+                _logger.LogWarning("Detected {Streak} consecutive tour completions with no questions. Ending game to prevent infinite loop. Tour: {Tour}",
+                    emptyStreak, session.CurrentTour);
+                session.Metadata.Remove("NoQuestionsStreak");
+                await CompleteGameAsync(session, cancellationToken);
+                return;
+            }
+
+            session.Metadata["NoQuestionsStreak"] = emptyStreak;
+            await CompleteTourAsync(session, cancellationToken);
+            return;
+        }
+
+        // A question is available — reset the empty-completion streak.
+        session.Metadata.Remove("NoQuestionsStreak");
 
         session.CurrentPlayerId = session.TurnQueue.Dequeue();
         session.CurrentQuestion = questions.Dequeue();
@@ -1452,6 +1484,26 @@ public sealed class GameLifecycleService : IGameLifecycleService
     private static string Normalize(string value)
     {
         return value.Trim().Trim('.', '!', '?', '\'', '"');
+    }
+
+    /// <summary>
+    /// Reads the "no questions" consecutive-completion counter from metadata, tolerating the
+    /// int/long/JsonElement forms it can take after a session round-trips through JSON persistence.
+    /// </summary>
+    private static int GetNoQuestionsStreak(GameSession session)
+    {
+        if (!session.Metadata.TryGetValue("NoQuestionsStreak", out var value))
+        {
+            return 0;
+        }
+
+        return value switch
+        {
+            int i => i,
+            long l => (int)l,
+            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Number => je.GetInt32(),
+            _ => 0
+        };
     }
 
     private static List<Question> ExtractAskedQuestions(object askedObj)

@@ -24,16 +24,14 @@ if $SKIP_TESTS; then
   log "Skipping tests (--skip-tests)"
 else
   log "Running tests..."
-  # Capture output; ignore exit code because the .NET test host crashes on teardown
-  # (stack overflow in cleanup, not in tests). Parse result line to detect real failures.
-  TEST_OUTPUT=$(dotnet test "$REPO_ROOT/StrongLink.sln" --no-restore --verbosity minimal 2>&1 || true)
+  TEST_STATUS=0
+  TEST_OUTPUT=$(dotnet test "$REPO_ROOT/StrongLink.sln" --no-restore --verbosity minimal 2>&1) || TEST_STATUS=$?
   echo "$TEST_OUTPUT"
-  # The .NET 9 test host crashes with a stack overflow in xunit cleanup after all tests complete.
-  # This is a runner bug — all tests still execute and report correctly before the crash.
-  # We treat the run as failed only if any test line shows "Failed" with a non-zero count.
-  FAILED_COUNT=$(echo "$TEST_OUTPUT" | grep -oE 'Failed:\s+[0-9]+' | grep -oE '[0-9]+' | tail -1)
-  if [ -n "$FAILED_COUNT" ] && [ "$FAILED_COUNT" -gt 0 ]; then
-    log "ERROR: $FAILED_COUNT test(s) failed. Aborting deploy."
+  # Honor the real exit code: a non-zero status means a test failed or the host crashed —
+  # either way the deploy must abort. (The historical stack-overflow on test-host teardown was a
+  # real bug in the game loop, now fixed; we no longer mask the exit code to work around it.)
+  if [ "$TEST_STATUS" -ne 0 ]; then
+    log "ERROR: test run exited with status $TEST_STATUS. Aborting deploy."
     exit 1
   fi
   PASSED_COUNT=$(echo "$TEST_OUTPUT" | grep -oE 'Passed:\s+[0-9]+' | grep -oE '[0-9]+' | tail -1)

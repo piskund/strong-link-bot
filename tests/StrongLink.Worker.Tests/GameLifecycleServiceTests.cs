@@ -202,9 +202,11 @@ public class GameLifecycleServiceTests
         Assert.Equal(2, session.CurrentTour);
         Assert.False(session.Metadata.ContainsKey("SuddenDeathParticipants"));
 
-        // SuddenDeathScores should be cleared
-        Assert.Equal(0, session.Players[0].SuddenDeathScore);
-        Assert.Equal(0, session.Players[1].SuddenDeathScore);
+        // SuddenDeathScores are intentionally preserved after resolution (used for final winner
+        // ranking — see SuddenDeathService.ExitSuddenDeath). The two survivors each answered one
+        // sudden-death question correctly, so both retain a score of 1.
+        Assert.Equal(1, session.Players[0].SuddenDeathScore);
+        Assert.Equal(1, session.Players[1].SuddenDeathScore);
     }
 
     [Fact]
@@ -280,18 +282,11 @@ public class GameLifecycleServiceTests
 
         session.Metadata["SuddenDeathParticipants"] = new List<long> { 1000, 1001, 1002 };
 
-        session.QuestionsByTour[1] = new Queue<Question>(new[]
-        {
-            new Question { Topic = "History", Text = "Q1?", Answer = "A1" },
-            new Question { Topic = "History", Text = "Q2?", Answer = "A2" },
-            new Question { Topic = "History", Text = "Q3?", Answer = "A3" },
-            new Question { Topic = "History", Text = "Q4?", Answer = "A4" },
-            new Question { Topic = "History", Text = "Q5?", Answer = "A5" }
-        });
-        session.QuestionsByTour[2] = new Queue<Question>(new[]
-        {
-            new Question { Topic = "Geography", Text = "Q6?", Answer = "A6" }
-        });
+        // 10 questions so the queue stays above the sudden-death threshold across both rounds.
+        session.QuestionsByTour[1] = new Queue<Question>(
+            Enumerable.Range(1, 10).Select(i => new Question { Topic = "History", Text = $"Q{i}?", Answer = $"A{i}" }));
+        session.QuestionsByTour[2] = new Queue<Question>(
+            Enumerable.Range(100, 5).Select(i => new Question { Topic = "Geography", Text = $"Q{i}?", Answer = $"A{i}" }));
 
         session.TurnQueue.Enqueue(1000);
         session.TurnQueue.Enqueue(1001);
@@ -299,14 +294,10 @@ public class GameLifecycleServiceTests
 
         _sentMessages.Clear();
 
-        // Round 1: All answer wrong (scores stay 0,0,0)
+        // Round 1: all answer wrong → scores stay tied at 0, sudden death continues.
         await _service.AdvanceRoundAsync(session, CancellationToken.None);
         await _service.HandleAnswerAsync(session, 1000, "WRONG", CancellationToken.None);
-
-        await _service.AdvanceRoundAsync(session, CancellationToken.None);
         await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
-
-        await _service.AdvanceRoundAsync(session, CancellationToken.None);
         await _service.HandleAnswerAsync(session, 1002, "WRONG", CancellationToken.None);
 
         // All still have SuddenDeathScore=0, should still be in sudden death
@@ -315,17 +306,17 @@ public class GameLifecycleServiceTests
         Assert.Equal(0, session.Players[1].SuddenDeathScore);
         Assert.Equal(0, session.Players[2].SuddenDeathScore);
 
-        // Round 2: Player0 answers correctly
-        await _service.AdvanceRoundAsync(session, CancellationToken.None);
+        // Round 2: P0 answers correctly, P1/P2 wrong. Resolution happens once the round completes
+        // (turn queue empties), not mid-round — so all three must answer.
         await _service.HandleAnswerAsync(session, 1000, "A4", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
+        await _service.HandleAnswerAsync(session, 1002, "WRONG", CancellationToken.None);
 
-        // Now Player0=1, others=0 - should eliminate Player1 and Player2
+        // P0=1, others=0 → eliminate P1 and P2. Only P0 remains → game completes.
         Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
         Assert.Equal(PlayerStatus.Eliminated, session.Players[1].Status);
         Assert.Equal(PlayerStatus.Eliminated, session.Players[2].Status);
-
-        Assert.Equal(GameStatus.InProgress, session.Status);
-        Assert.Equal(2, session.CurrentTour);
+        Assert.Equal(GameStatus.Completed, session.Status);
     }
 
     [Fact]
@@ -425,9 +416,11 @@ public class GameLifecycleServiceTests
         Assert.Equal(2, session.CurrentTour);
         Assert.False(session.Metadata.ContainsKey("SuddenDeathParticipants"));
 
-        // SuddenDeathScores should be cleared
-        Assert.Equal(0, session.Players[0].SuddenDeathScore);
-        Assert.Equal(0, session.Players[1].SuddenDeathScore);
+        // SuddenDeathScores are intentionally preserved after resolution (used for final winner
+        // ranking — see SuddenDeathService.ExitSuddenDeath). Both survivors answered one
+        // sudden-death question correctly, so each retains a score of 1.
+        Assert.Equal(1, session.Players[0].SuddenDeathScore);
+        Assert.Equal(1, session.Players[1].SuddenDeathScore);
     }
 
     // ── Sudden death triggering rules ────────────────────────────────────────
@@ -497,9 +490,10 @@ public class GameLifecycleServiceTests
         await _service.HandleAnswerAsync(session, 1002, "WRONG", CancellationToken.None);
         await _service.HandleAnswerAsync(session, 1003, "WRONG", CancellationToken.None);
 
-        // Eliminating all 3 tied-lowest would leave 1 — that's a clean win, not SD
-        Assert.Equal(GameStatus.InProgress, session.Status);
-        // P1/P2/P3 eliminated, P0 wins the tour
+        // Eliminating all 3 tied-lowest leaves only P0 — a clean win (no SD). With a single active
+        // player left, the game completes rather than continuing to tour 2.
+        Assert.Equal(GameStatus.Completed, session.Status);
+        // P1/P2/P3 eliminated, P0 wins
         Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
         Assert.All(session.Players.Skip(1), p => Assert.Equal(PlayerStatus.Eliminated, p.Status));
     }
@@ -584,12 +578,12 @@ public class GameLifecycleServiceTests
         await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
         await _service.HandleAnswerAsync(session, 1002, "WRONG", CancellationToken.None);
 
-        // Eliminating P1+P2 leaves 1 winner (P0) — no SD, clean outcome
+        // Eliminating P1+P2 leaves 1 winner (P0) — no SD, clean outcome. The leader (P0) is never
+        // eliminated, and with a single survivor the game completes.
         Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
         Assert.Equal(PlayerStatus.Eliminated, session.Players[1].Status);
         Assert.Equal(PlayerStatus.Eliminated, session.Players[2].Status);
-        Assert.Equal(GameStatus.InProgress, session.Status);
-        Assert.Equal(2, session.CurrentTour);
+        Assert.Equal(GameStatus.Completed, session.Status);
     }
 
     // ── Regression: SD continued after a tied round ───────────────────────────
@@ -633,10 +627,11 @@ public class GameLifecycleServiceTests
         await _service.HandleAnswerAsync(session, 1000, "A3", CancellationToken.None);
         await _service.HandleAnswerAsync(session, 1001, "WRONG", CancellationToken.None);
 
+        // P1 eliminated leaves only P0 active → the game completes (this scenario's purpose is to
+        // confirm SD *continued* past the round-1 tie above rather than ending prematurely).
         Assert.Equal(PlayerStatus.Active, session.Players[0].Status);
         Assert.Equal(PlayerStatus.Eliminated, session.Players[1].Status);
-        Assert.Equal(GameStatus.InProgress, session.Status);
-        Assert.Equal(2, session.CurrentTour);
+        Assert.Equal(GameStatus.Completed, session.Status);
     }
 
     [Fact]
