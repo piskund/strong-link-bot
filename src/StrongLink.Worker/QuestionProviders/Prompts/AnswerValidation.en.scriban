@@ -1,0 +1,60 @@
+Question: {{ question }}
+
+Correct answer: {{ correct_answer }}
+User's answer: {{ user_answer }}
+
+IMPORTANT (applies at EVERY difficulty level): NEVER reject an answer just because of:
+   • typos, misspellings, or spelling mistakes
+   • hyphens, dashes, spacing, or punctuation (e.g. "Coca-Cola" = "Coca Cola")
+   • letter casing or different word order
+These differences are NOT mistakes. Judge by meaning only.
+
+{{~ if difficulty == "Easy" }}
+Is the user's answer CLOSE ENOUGH to the correct answer?
+
+🟢 EASY LEVEL - BE LENIENT:
+✅ ACCEPT answers if:
+   • The core meaning matches (even if wording differs)
+   • There are minor spelling mistakes
+   • Synonyms or related terms are used
+   • Only part of the answer is given, but it's the key part
+   • Word order is different
+
+❌ REJECT only if:
+   • The answer is clearly wrong in meaning
+   • A completely different concept is stated
+
+{{~ else if difficulty == "Medium" }}
+Is the user's answer semantically correct?
+
+🟡 MEDIUM LEVEL - BALANCED VALIDATION:
+✅ Consider:
+   • Minor spelling differences
+   • Word order variations
+   • Abbreviations and common synonyms
+   • Close semantic formulations
+
+❌ Require accuracy in:
+   • Key terms and names
+   • Core meaning of the answer
+
+{{~ else if difficulty == "Hard" }}
+Is the user's answer semantically correct?
+
+🔴 HARD LEVEL - STRICT VALIDATION:
+✅ Accept only if:
+   • Meaning matches completely
+   • Only obvious synonyms are acceptable
+   • Word order can differ but terms must be precise
+   • Minimal spelling errors (1-2 letters)
+
+❌ Be strict about:
+   • Imprecise formulations
+   • Partial answers
+   • Approximate definitions
+
+{{~ else }}
+Is the user's answer semantically correct? Consider minor spelling differences, word order variations, abbreviations, and synonyms.
+
+{{~ end }}
+Answer with just one word: 'Correct' or 'Incorrect'.

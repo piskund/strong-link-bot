@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
+using Scriban.Runtime;
 using StrongLink.Worker.Configuration;
 using StrongLink.Worker.Domain;
+using StrongLink.Worker.QuestionProviders.Prompts;
 
 namespace StrongLink.Worker.Services;
 
@@ -109,116 +111,21 @@ public sealed class AiAnswerValidator : IAnswerValidator
         return shorter.Any(w => w.Length >= 3 && longerSet.Contains(w));
     }
 
-    private string BuildValidationPrompt(string userAnswer, string correctAnswer, string question, GameLanguage language, DifficultyLevel difficultyLevel)
+    private static string BuildValidationPrompt(string userAnswer, string correctAnswer, string question, GameLanguage language, DifficultyLevel difficultyLevel)
     {
-        var strictnessGuidance = GetStrictnessGuidance(difficultyLevel, language);
+        var fileName = language == GameLanguage.Russian
+            ? "AnswerValidation.ru.scriban"
+            : "AnswerValidation.en.scriban";
 
-        return language == GameLanguage.Russian
-            ? $"Вопрос: {question}\n\n" +
-              $"Правильный ответ: {correctAnswer}\n" +
-              $"Ответ пользователя: {userAnswer}\n\n" +
-              strictnessGuidance +
-              $"Ответьте только одним словом: 'Верно' или 'Неверно'."
-            : $"Question: {question}\n\n" +
-              $"Correct answer: {correctAnswer}\n" +
-              $"User's answer: {userAnswer}\n\n" +
-              strictnessGuidance +
-              $"Answer with just one word: 'Correct' or 'Incorrect'.";
-    }
-
-    private static string GetStrictnessGuidance(DifficultyLevel difficulty, GameLanguage language)
-    {
-        // Baseline rule applied at EVERY difficulty: cosmetic differences are never wrong.
-        // The grader was reported to reject answers over typos and dashes even on lenient settings,
-        // so we make this non-negotiable and prepend it to the level-specific guidance below.
-        var baseline = language == GameLanguage.Russian
-            ? "ВАЖНО (действует на ЛЮБОМ уровне сложности): НИКОГДА не отклоняйте ответ только из-за:\n" +
-              "   • опечаток, описок или орфографических ошибок\n" +
-              "   • дефисов, тире, пробелов и знаков препинания (например, «Кока-Кола» = «Кока Кола»)\n" +
-              "   • регистра букв, ё/е, разного порядка слов\n" +
-              "Эти различия — НЕ ошибка. Оценивайте только по смыслу.\n\n"
-            : "IMPORTANT (applies at EVERY difficulty level): NEVER reject an answer just because of:\n" +
-              "   • typos, misspellings, or spelling mistakes\n" +
-              "   • hyphens, dashes, spacing, or punctuation (e.g. \"Coca-Cola\" = \"Coca Cola\")\n" +
-              "   • letter casing or different word order\n" +
-              "These differences are NOT mistakes. Judge by meaning only.\n\n";
-
-        return baseline + difficulty switch
+        var model = new ScriptObject
         {
-            DifficultyLevel.Easy => language == GameLanguage.Russian
-                ? "Является ли ответ пользователя ДОСТАТОЧНО БЛИЗКИМ к правильному?\n\n" +
-                  "🟢 ЛЕГКИЙ УРОВЕНЬ - БУДЬТЕ СНИСХОДИТЕЛЬНЫ:\n" +
-                  "✅ ПРИНИМАЙТЕ ответы, если:\n" +
-                  "   • Основной смысл совпадает (даже если формулировка отличается)\n" +
-                  "   • Есть небольшие орфографические ошибки\n" +
-                  "   • Использованы синонимы или близкие понятия\n" +
-                  "   • Указана только часть ответа, но ключевая\n" +
-                  "   • Порядок слов отличается\n\n" +
-                  "❌ ОТКЛОНЯЙТЕ только если:\n" +
-                  "   • Ответ явно неправильный по смыслу\n" +
-                  "   • Указано совершенно другое понятие\n\n"
-                : "Is the user's answer CLOSE ENOUGH to the correct answer?\n\n" +
-                  "🟢 EASY LEVEL - BE LENIENT:\n" +
-                  "✅ ACCEPT answers if:\n" +
-                  "   • The core meaning matches (even if wording differs)\n" +
-                  "   • There are minor spelling mistakes\n" +
-                  "   • Synonyms or related terms are used\n" +
-                  "   • Only part of the answer is given, but it's the key part\n" +
-                  "   • Word order is different\n\n" +
-                  "❌ REJECT only if:\n" +
-                  "   • The answer is clearly wrong in meaning\n" +
-                  "   • A completely different concept is stated\n\n",
-
-            DifficultyLevel.Medium => language == GameLanguage.Russian
-                ? "Является ли ответ пользователя семантически правильным?\n\n" +
-                  "🟡 СРЕДНИЙ УРОВЕНЬ - СБАЛАНСИРОВАННАЯ ПРОВЕРКА:\n" +
-                  "✅ Учитывайте:\n" +
-                  "   • Небольшие орфографические различия\n" +
-                  "   • Разный порядок слов\n" +
-                  "   • Сокращения и распространённые синонимы\n" +
-                  "   • Близкие по смыслу формулировки\n\n" +
-                  "❌ Требуйте точность в:\n" +
-                  "   • Ключевых терминах и именах\n" +
-                  "   • Основном смысле ответа\n\n"
-                : "Is the user's answer semantically correct?\n\n" +
-                  "🟡 MEDIUM LEVEL - BALANCED VALIDATION:\n" +
-                  "✅ Consider:\n" +
-                  "   • Minor spelling differences\n" +
-                  "   • Word order variations\n" +
-                  "   • Abbreviations and common synonyms\n" +
-                  "   • Close semantic formulations\n\n" +
-                  "❌ Require accuracy in:\n" +
-                  "   • Key terms and names\n" +
-                  "   • Core meaning of the answer\n\n",
-
-            DifficultyLevel.Hard => language == GameLanguage.Russian
-                ? "Является ли ответ пользователя семантически правильным?\n\n" +
-                  "🔴 СЛОЖНЫЙ УРОВЕНЬ - СТРОГАЯ ПРОВЕРКА:\n" +
-                  "✅ Принимайте только если:\n" +
-                  "   • Смысл полностью совпадает\n" +
-                  "   • Допустимы только очевидные синонимы\n" +
-                  "   • Порядок слов может отличаться, но термины точные\n" +
-                  "   • Минимальные орфографические ошибки (1-2 буквы)\n\n" +
-                  "❌ Будьте строги к:\n" +
-                  "   • Неточным формулировкам\n" +
-                  "   • Частичным ответам\n" +
-                  "   • Приблизительным определениям\n\n"
-                : "Is the user's answer semantically correct?\n\n" +
-                  "🔴 HARD LEVEL - STRICT VALIDATION:\n" +
-                  "✅ Accept only if:\n" +
-                  "   • Meaning matches completely\n" +
-                  "   • Only obvious synonyms are acceptable\n" +
-                  "   • Word order can differ but terms must be precise\n" +
-                  "   • Minimal spelling errors (1-2 letters)\n\n" +
-                  "❌ Be strict about:\n" +
-                  "   • Imprecise formulations\n" +
-                  "   • Partial answers\n" +
-                  "   • Approximate definitions\n\n",
-
-            _ => language == GameLanguage.Russian
-                ? "Является ли ответ пользователя семантически правильным? Учитывайте небольшие орфографические различия, разный порядок слов, сокращения и синонимы.\n\n"
-                : "Is the user's answer semantically correct? Consider minor spelling differences, word order variations, abbreviations, and synonyms.\n\n"
+            ["question"] = question,
+            ["correct_answer"] = correctAnswer,
+            ["user_answer"] = userAnswer,
+            ["difficulty"] = difficultyLevel.ToString()
         };
+
+        return PromptTemplateLoader.Render(fileName, model);
     }
 
     private async Task<OpenAiResponse> RequestOpenAiAsync(string prompt, CancellationToken cancellationToken)
@@ -231,7 +138,7 @@ public sealed class AiAnswerValidator : IAnswerValidator
             Model = modelToUse,
             Messages =
             [
-                new OpenAiMessage("system", "You are a friendly quiz answer judge. Decide whether the user's answer conveys the SAME MEANING as the correct answer. This is a casual party game, so judge generously by sense: accept typos, transliteration and spelling variants, alternative or partial names, synonyms, missing articles/suffixes, and different word order. Only reject answers that name a clearly different thing or are plainly wrong. When in doubt, accept."),
+                new OpenAiMessage("system", PromptTemplateLoader.Render("AnswerValidationSystem.scriban")),
                 new OpenAiMessage("user", prompt)
             ],
             Temperature = 0.0 // Use deterministic output for validation

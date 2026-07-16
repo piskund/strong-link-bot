@@ -1,0 +1,147 @@
+{{~ if is_random_topic ~}}
+FIRST choose a random interesting trivia topic (e.g., history, science, art, literature, sports, movies, geography, technology, culture, etc.). Then create a set of trivia questions in English on that chosen topic.
+{{~ else ~}}
+Create a set of trivia questions in English on the topic "{{ topic }}".
+{{~ end ~}}
+{{~ if is_movie_topic }}
+
+🎬 IMPORTANT FOR "MOVIES/CINEMA" TOPIC:
+✅ FOCUS ON:
+- Specific movies and their plots
+- Actors and their famous roles
+- Directors and their filmography
+- Awards (Oscars, Palme d'Or, etc.)
+- Famous movie quotes
+- Characters and their names
+- Release years of famous films
+- Genres and franchises
+
+❌ AVOID TECHNICAL ASPECTS:
+- Questions about filmmaking (how movies are made)
+- Cinematography and cameras
+- Editing and post-production
+- Special effects and CGI technology
+- Technical equipment
+{{~ end }} Follow these requirements:
+{{~ if is_random_topic }}
+- Generate {{ questions }} questions about your chosen topic.
+{{~ else }}
+- Generate {{ questions }} questions about the topic "{{ topic }}".
+{{~ end ~}}
+{{~ if difficulty == "Easy" }}
+
+🎯 EASY LEVEL - SIMPLE AND STRAIGHTFORWARD QUESTIONS:
+
+✅ QUESTION STYLE:
+   • Use direct, simple formulations
+   • Ask about widely known facts
+   • Focus on popular topics, famous people, major events
+   • Example: "What is the capital of France?" → Answer: "Paris"
+   • Example: "Who wrote 'Romeo and Juliet'?" → Answer: "William Shakespeare"
+   • Example: "How many continents are there?" → Answer: "Seven"
+
+✅ CHOOSE TOPICS ABOUT:
+   • Basic facts from general education
+   • Well-known historical events and figures
+   • Popular movies, books, songs
+   • Simple geography and nature
+
+❌ AVOID:
+   • Complex riddles and metaphors
+   • Obscure details and facts
+   • Requiring exact dates (except most famous ones)
+   • Specialized knowledge
+
+{{~ else if difficulty == "Medium" }}
+
+🎯 MEDIUM LEVEL - BALANCE BETWEEN KNOWLEDGE AND LOGIC:
+
+✅ QUESTION STYLE:
+   • Combine direct questions with elements of logic
+   • Use moderate metaphors and descriptions
+   • Ask about less obvious but not too obscure facts
+   • Example: "This Russian poet died in a duel at age 37." → Answer: "Alexander Pushkin"
+   • Example: "Which metal is called 'white gold'?" → Answer: "Platinum"
+   • Example: "In which country did ballet originate?" → Answer: "Italy"
+
+✅ CHOOSE TOPICS ABOUT:
+   • Facts requiring basic erudition
+   • Logical connections between events
+   • Moderately well-known cultural phenomena
+   • Interesting scientific facts
+
+❌ AVOID:
+   • Too simple school-level questions
+   • Very complex riddles
+   • Highly specialized knowledge
+
+{{~ else if difficulty == "Hard" }}
+
+🎯 HARD LEVEL - 'QUIZ SHOW' STYLE - LOGIC AND ASSOCIATIONS:
+
+✅ PREFER questions that can be FIGURED OUT:
+   • Use metaphors, allegories, creative descriptions
+   • Describe properties, characteristics, functions of the subject
+   • Create riddles through associations and logical connections
+   • Example: "In a fairy tale by modern writer Eugene Klyuev, the title character grew thinner day by day until dying of complete exhaustion. That was its purpose. Name this character in two words." → Answer: "Tear-off calendar"
+   • Example: "This musical instrument got its name from Italian words for 'soft' and 'loud', reflecting its key feature." → Answer: "Pianoforte"
+   • Example: "In ancient times this substance was valued its weight in gold and used as currency. Now it's in every kitchen." → Answer: "Salt"
+
+❌ AVOID highly specialized knowledge:
+   • DON'T require exact dates (except most famous events)
+   • DON'T ask about obscure people's names or technical jargon
+   • DON'T create questions requiring professional expertise
+   • Bad: "In what year was composer Anton Rubinstein born?" (narrow knowledge)
+   • Good: "This Russian composer founded Russia's first conservatory. His surname matches the name of a precious stone." (can be figured out)
+
+{{~ end }}
+- Each question should be clear and concise, suitable for a general audience.
+- Provide a correct short answer for each question (one word or a few words at most).
+- Questions should be interesting and thought-provoking, using logic and associations.
+- Avoid ambiguous questions - each should have a single clear correct answer.
+- Ensure the questions are varied and cover different aspects of the topic.
+{{~ if mature }}
+- Mature Content (18+): Adult themes are allowed (erotica, Renaissance art with nudity, mythology with explicit themes, history of sexuality, etc.). Questions should be informative and educational, not vulgar.
+{{~ else }}
+- Family-Friendly Content: Avoid adult themes. All questions should be suitable for a family audience.
+{{~ end }}
+- For approximately {{ questions_with_images }} questions, include a DIRECT image URL from RELIABLE public sources.
+  IMPORTANT - Use ONLY these verified sources:
+  • Unsplash CDN: https://images.unsplash.com/photo-...
+  • Wikimedia Commons DIRECT links: https://upload.wikimedia.org/wikipedia/commons/thumb/.../400px-filename.jpg (use 320px, 400px or 640px instead of large sizes!)
+  • Pixabay CDN: https://pixabay.com/get/...
+  • Pexels CDN: https://images.pexels.com/photos/...
+  Do NOT use Wikipedia page links (wiki/File:...) - only direct upload.wikimedia.org links!
+  ⚠️ SIZE MATTERS: For Wikimedia use SMALLER sizes (320px, 400px, 640px) - large images (800px+) often fail to load!
+  URL MUST end with .jpg, .png, or .webp
+  Choose questions where an image is genuinely helpful (landmarks, animals, plants, flags, maps, etc.).
+{{~ if archived != empty }}
+
+🚫🚫🚫 CRITICAL - STRICTLY AVOID DUPLICATES! 🚫🚫🚫
+
+These {{ archived.size }} questions have ALREADY been used in recent games.
+⛔ ABSOLUTELY FORBIDDEN to repeat them in ANY form:
+
+{{ for q in archived ~}}
+{{ q }}
+{{ end ~}}
+
+✅ MANDATORY REQUIREMENTS FOR NEW QUESTIONS:
+
+1️⃣ CHECK EACH QUESTION: Ensure it's NOT similar to any question from the list above
+2️⃣ AVOID THE OBVIOUS: Don't ask the most well-known, cliché questions about the topic
+   ❌ Bad: "Who wrote War and Peace?" - too popular
+   ✅ Good: "Which Tolstoy novel begins with a description of Anna Pavlovna Scherer's soirée?"
+3️⃣ DIG DEEPER: Ask about lesser-known details, secondary characters, unusual facts
+4️⃣ CHANGE THE ANGLE: Instead of "Who wrote it?" ask about plot, characters, dates, influence, criticism
+5️⃣ DIVERSITY: Cover different periods, countries, genres, styles
+6️⃣ NO REPHRASING: Don't reformulate existing questions - create completely new ones!
+
+⚠️ WARNING: Generating a question similar to an already used one will be considered an error!
+
+{{~ end }}
+- Format the output exactly as:
+Question: <question text>?
+Answer: <answer text>
+Image: <image URL> (only if applicable)
+(No additional explanations or commentary.)
